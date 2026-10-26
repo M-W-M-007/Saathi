@@ -93,6 +93,20 @@
         android:gravity="end"
         android:orientation="horizontal">
 
+        <!--
+          The user could close this panel but the floating mic stayed on screen
+          with no visible way to get rid of it. Long-pressing the bubble works,
+          but nothing said so. This button does say so.
+        -->
+        <TextView
+            android:id="@+id/panelHideMic"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:padding="12dp"
+            android:text="Mic chhupao"
+            android:textColor="#C9D6FF"
+            android:textStyle="bold" />
+
         <TextView
             android:id="@+id/panelAgain"
             android:layout_width="wrap_content"

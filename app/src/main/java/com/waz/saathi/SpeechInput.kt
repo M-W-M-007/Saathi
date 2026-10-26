@@ -32,15 +32,15 @@ class SpeechInput(private val context: Context) {
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
 
-    /** Guards the one automatic retry, so a failure cannot loop. */
-    private var retried = false
+    /** Caps the automatic retries, so a failure cannot loop forever. */
+    private var retries = 0
 
     val isListening: Boolean get() = listening
 
     fun available(): Boolean = SpeechRecognizer.isRecognitionAvailable(context)
 
     fun start(callback: Callback) {
-        retried = false
+        retries = 0
         launch(callback, offline = false)
     }
 
@@ -113,19 +113,34 @@ class SpeechInput(private val context: Context) {
     }
 
     /**
-     * Network, server and no-match failures are worth one more go in offline
-     * mode: on a phone whose voice model is on-device, the online path can fail
-     * while the offline one works perfectly.
+     * Most failures here are transient and worth another go.
+     *
+     * Error 11 — the recogniser service dropping its connection — was the one
+     * actually being hit, and it was not in the retry list, so a single blip
+     * surfaced as "Voice error (11)" and the user had to tap again. It is now
+     * retried like the rest: a fresh recogniser is built each attempt, because
+     * a disconnected one stays disconnected no matter what you ask it.
+     *
+     * The second attempt also asks for offline recognition, which on a phone
+     * whose voice model is on-device works when the online path will not.
      */
     private fun handleFailure(error: Int, callback: Callback, wasOffline: Boolean) {
         val retryable = error == SpeechRecognizer.ERROR_NETWORK ||
             error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT ||
             error == SpeechRecognizer.ERROR_SERVER ||
-            error == SpeechRecognizer.ERROR_NO_MATCH
+            error == SpeechRecognizer.ERROR_NO_MATCH ||
+            error == SpeechRecognizer.ERROR_CLIENT ||
+            error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
+            error == ERROR_SERVER_DISCONNECTED
 
-        if (retryable && !wasOffline && !retried) {
-            retried = true
-            main.postDelayed({ launch(callback, offline = true) }, 150)
+        if (retryable && retries < 2) {
+            retries++
+            // A busy or just-disconnected service needs a moment to come back.
+            val wait = if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
+                error == ERROR_SERVER_DISCONNECTED
+            ) 600L else 150L
+
+            main.postDelayed({ launch(callback, offline = !wasOffline) }, wait)
             return
         }
 
@@ -164,6 +179,18 @@ class SpeechInput(private val context: Context) {
 
         SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Voice engine abhi busy hai."
         SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Kuch sunai nahi diya."
+
+        ERROR_SERVER_DISCONNECTED ->
+            "Voice engine ka connection toot gaya. Dobara boliye."
+
         else -> "Voice error ($error)."
+    }
+
+    private companion object {
+        /**
+         * SpeechRecognizer.ERROR_SERVER_DISCONNECTED, added in API 31. Written
+         * out so the app still builds and behaves the same on older phones.
+         */
+        const val ERROR_SERVER_DISCONNECTED = 11
     }
 }

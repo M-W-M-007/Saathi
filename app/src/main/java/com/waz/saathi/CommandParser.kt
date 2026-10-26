@@ -12,51 +12,333 @@ import java.util.Locale
 /**
  * Turns a spoken sentence into a [Command].
  *
- * Two parsers, tried in order:
+ * The earlier version matched a keyword anywhere in the sentence and then took
+ * everything that was left as the target. On a short command that works. On a
+ * real sentence it is a disaster: "contact open karo jismein sister ka number
+ * search karo" contains the word "call", so it became CALL with a target of
+ * thirty characters of leftovers — and because the rules had "understood" it,
+ * the model never got a look at it.
  *
- *  GEMINI — handles free phrasing and mixed Hindi/English, and knows which apps
- *           are actually installed, so "wo blue wala chat app kholo" can resolve.
- *           Needs an API key and a network.
- *
- *  RULES  — keyword matching. Narrower, but instant, offline and predictable.
- *           It is the fallback, and it is also what runs when no key is set.
- *
- * The rule parser is not a stub: a voice assistant that stops working without
- * a network is not much use on a phone.
+ * So the rules now report how much they should be trusted. A short, single
+ * intent sentence with a clean slot answers instantly and offline. Anything
+ * longer, or anything containing two different intents, is handed to Gemini,
+ * which is what it is for.
  */
 object CommandParser {
 
-    /**
-     * Never throws. An exception escaping this used to kill the background
-     * thread that called it, leaving the panel stuck on "Samajh raha hoon…"
-     * forever with nothing to show the user — so every path here is guarded
-     * and a failure degrades to the rule parser, then to UNKNOWN.
-     */
+    /** A parse plus how far it should be trusted. 1.0 = certain. */
+    data class Guess(val command: Command, val confidence: Float)
+
+    /** Above this the rules answer on their own — no network, no wait. */
+    private const val TRUST_RULES = 0.80f
+
+    /** Below this the rules are not worth acting on even with no model. */
+    private const val FLOOR = 0.45f
+
     fun parse(context: Context, spoken: String): Command {
         val text = spoken.trim()
         if (text.isEmpty()) return Command(Command.Action.UNKNOWN)
 
-        // Rules run FIRST, and when they understand the command that is the
-        // answer — no network, no wait. "WhatsApp kholo" does not need a model
-        // to interpret it, and going online for it made every simple command
-        // feel sluggish. Gemini is for the sentences rules cannot handle.
-        val quick = runCatching { parseWithRules(context, text) }
-            .getOrElse { Command(Command.Action.UNKNOWN, text = text) }
+        val guess = runCatching { rules(context, text) }
+            .getOrElse { Guess(Command(Command.Action.UNKNOWN, text = text), 0f) }
 
-        if (quick.action != Command.Action.UNKNOWN) return quick
+        if (guess.confidence >= TRUST_RULES) return guess.command
 
         if (Settings.geminiKey(context).isNotEmpty()) {
-            runCatching { parseWithGemini(context, text) }.getOrNull()
+            runCatching { gemini(context, text) }.getOrNull()
                 ?.takeIf { it.action != Command.Action.UNKNOWN }
                 ?.let { return it }
         }
 
-        return quick
+        return if (guess.confidence >= FLOOR) guess.command
+        else Command(Command.Action.UNKNOWN, text = text)
     }
 
-    // ------------------------------------------------------------- gemini
+    // ------------------------------------------------------------- patterns
 
-    private fun parseWithGemini(context: Context, spoken: String): Command? {
+    // Each regex pins the slot between explicit markers instead of taking
+    // "whatever is left", so a long sentence cannot leak into a target.
+
+    private val OPEN = Regex(
+        """^(?:(.+?)\s+)?(?:ko\s+)?""" +
+            """(?:kholiye|kholie|kholo|khol\s*do|kholna|khol|""" +
+            """open\s*kar(?:o|iye|ein|na)?|open|launch\s*kar(?:o|iye)?|launch|""" +
+            """chalu\s*kar(?:o|iye)?|start\s*kar(?:o|iye)?|start)""" +
+            """(?:\s+(.+))?$"""
+    )
+
+    private val CALL = Regex(
+        """^(?:(.+?)\s+)?(?:ko\s+)?""" +
+            """(?:call\s*kar(?:o|iye|ein|na|un)?|call|phone\s*kar(?:o|iye)?|phone|""" +
+            """dial\s*kar(?:o|iye)?|dial|milao|milaiye|laga\s*do|lagao|lagaiye)""" +
+            """(?:\s+(.+))?$"""
+    )
+
+    private val WHATSAPP = Regex(
+        """^(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?(.+?)\s+ko\s+""" +
+            """(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?""" +
+            """(?:likho|likh\s*do|likhiye|bhejo|bhej\s*do|bhejiye|message\s*kar(?:o|iye)?|msg)""" +
+            """\s*[:,\-]?\s*(.+)$"""
+    )
+
+    private val SMS = Regex(
+        """^(.+?)\s+ko\s+(?:sms|message|msg|text|massage)\s*""" +
+            """(?:kar(?:o|iye)?|bhejo|bhej\s*do|bhejiye)?\s*[:,\-]?\s*(.+)$"""
+    )
+
+    private val TYPE = Regex(
+        """^(?:likho|likh\s*do|likhiye|likh\s*dijiye|type\s*kar(?:o|iye)?|type|write)""" +
+            """\s*[:,\-]?\s*(.+)$"""
+    )
+
+    private val FOLDER = Regex(
+        """^(?:(.+?)\s+(?:mein|me|main|ke\s+andar)\s+)?(?:naya\s+|new\s+)?folder\s*""" +
+            """(?:banao|bana\s*do|banaiye|banana|create\s*kar(?:o|iye)?|create)\s*""" +
+            """(?:ka\s+)?(?:naam|name)?\s*(.*)$"""
+    )
+
+    private val MOVE = Regex(
+        """^(.+?)\s+(?:ko|wali\s+file)\s+(.+?)\s+(?:mein|me|main|folder\s+mein)\s+""" +
+            """(?:move\s*kar(?:o|iye)?|shift\s*kar(?:o|iye)?|daal\s*do|bhej\s*do)$"""
+    )
+
+    private val COPY = Regex(
+        """^(.+?)\s+ko\s+(.+?)\s+(?:mein|me|main)\s+copy\s*kar(?:o|iye)?$"""
+    )
+
+    private val LIST = Regex(
+        """^(.+?)\s+(?:mein|me|main|ki|ke)\s+(?:kya\s+hai|files?\s*(?:dikhao|dikhaiye|batao)|""" +
+            """list\s*kar(?:o|iye)?|dikhao|dikhaiye)$"""
+    )
+
+    private val SEARCH = Regex(
+        """^(.+?)\s+(?:naam\s+ki\s+)?(?:file\s+)?(?:dhoondho|dhundo|dhoondiye|search\s*kar(?:o|iye)?|""" +
+            """khojo|find\s*kar(?:o|iye)?)$"""
+    )
+
+    /** Words that carry no meaning in a command and only confuse the slots. */
+    private val FILLER = setOf(
+        "zara", "please", "plz", "bhai", "yaar", "abhi", "jaldi",
+        "mere", "meri", "mera", "app", "ek", "to", "toh", "na", "hai"
+    )
+
+    /**
+     * Each family's giveaway words. When two different families show up in one
+     * sentence the rules stop guessing — that mixture is exactly what the model
+     * is better at.
+     */
+    private val FAMILIES = mapOf(
+        "open" to listOf("kholo", "kholiye", "khol", "open", "launch", "chalu", "start"),
+        "call" to listOf("call", "phone", "dial", "milao", "milaiye", "lagao"),
+        // "whatsapp" is deliberately not here: "WhatsApp kholo" is an app being
+        // opened, and counting it as a message intent made that simple command
+        // look ambiguous and sent it to the network for no reason.
+        "msg" to listOf("sms", "message", "msg", "bhejo", "bhej", "massage"),
+        "write" to listOf("likho", "likh", "type", "write"),
+        "file" to listOf("folder", "file", "move", "copy", "delete", "dhoondho", "search", "khojo")
+    )
+
+    // ---------------------------------------------------------------- rules
+
+    private fun rules(context: Context, spoken: String): Guess {
+        val lower = spoken.lowercase(Locale.ROOT).trim().trim('.', '!', '?', ',')
+        val words = lower.split(Regex("\\s+")).size
+
+        val mixed = FAMILIES.count { (_, keys) ->
+            keys.any { k -> lower.contains(Regex("""\b${Regex.escape(k)}\b""")) }
+        } > 1
+
+        // A sentence with two intents in it, or one long enough to be a
+        // sentence rather than a command, never answers on rules alone.
+        val cap = when {
+            mixed -> 0.35f
+            words > 8 -> 0.40f
+            else -> 1f
+        }
+
+        // In Hinglish the last verb decides the action, so that is what picks
+        // the family here. Without this, "phone kholo" matched the call rule —
+        // "phone" is a call word wherever it appears — and tried to ring a
+        // contact called "kholo" instead of opening the Phone app.
+        val verb = mainVerb(lower)
+        // "call karo mummy ko" puts the verb first instead, so both ends count.
+        val lead = lower.split(Regex("\\s+")).first()
+
+        if (verb in OPEN_VERBS || lead in OPEN_VERBS) {
+            OPEN.find(lower)?.let { m ->
+                val name = slot(m.groupValues[1].ifEmpty { m.groupValues[2] })
+                if (name.isNotEmpty() && nameLooksClean(name)) {
+                    AppIndex.find(context, name)?.let {
+                        // A named app that is actually installed is as certain
+                        // as this gets, mixed wording or not.
+                        return Guess(Command(Command.Action.OPEN_APP, target = it.label), 0.93f)
+                    }
+                }
+            }
+        }
+
+        // Messages first: "X ko whatsapp par likho ..." also contains "bhej".
+        WHATSAPP.find(lower)?.let { m ->
+            val who = slot(m.groupValues[1])
+            val body = m.groupValues[2].trim()
+            if (who.isNotEmpty() && body.isNotEmpty()) {
+                // The slots here are pinned by "ko" and the verb, so a long
+                // message body does not make the parse any less certain.
+                return Guess(
+                    Command(Command.Action.WHATSAPP, target = who, text = body),
+                    if (nameLooksClean(who)) 0.9f else 0.5f
+                )
+            }
+        }
+
+        SMS.find(lower)?.let { m ->
+            val who = slot(m.groupValues[1])
+            val body = m.groupValues[2].trim()
+            if (who.isNotEmpty() && body.isNotEmpty()) {
+                return Guess(
+                    Command(Command.Action.SEND_SMS, target = who, text = body),
+                    if (nameLooksClean(who)) 0.88f else 0.5f
+                )
+            }
+        }
+
+        TYPE.find(lower)?.let { m ->
+            val what = m.groupValues[1].trim()
+            if (what.isNotEmpty()) {
+                return Guess(Command(Command.Action.TYPE_TEXT, text = what), minOf(0.85f, cap))
+            }
+        }
+
+        MOVE.find(lower)?.let { m ->
+            return Guess(
+                Command(
+                    Command.Action.MOVE_FILE,
+                    from = slot(m.groupValues[1]),
+                    to = slot(m.groupValues[2])
+                ),
+                minOf(0.85f, cap)
+            )
+        }
+
+        COPY.find(lower)?.let { m ->
+            return Guess(
+                Command(
+                    Command.Action.COPY_FILE,
+                    from = slot(m.groupValues[1]),
+                    to = slot(m.groupValues[2])
+                ),
+                minOf(0.85f, cap)
+            )
+        }
+
+        FOLDER.find(lower)?.let { m ->
+            val name = slot(m.groupValues[2]).ifEmpty { "Naya Folder" }
+            return Guess(
+                Command(Command.Action.CREATE_FOLDER, from = slot(m.groupValues[1]), to = name),
+                minOf(0.85f, cap)
+            )
+        }
+
+        if (verb in CALL_VERBS || lead in CALL_VERBS) CALL.find(lower)?.let { m ->
+            val who = slot(m.groupValues[1].ifEmpty { m.groupValues[2] })
+            if (who.isNotEmpty()) {
+                // A name is one or two words. Anything longer is leftovers from
+                // a sentence, and dialling on leftovers is how a stray "S" in
+                // a 4,000-contact phonebook gets called.
+                val confidence = if (nameLooksClean(who)) 0.86f else 0.30f
+                return Guess(Command(Command.Action.CALL, target = who), minOf(confidence, cap))
+            }
+        }
+
+        SEARCH.find(lower)?.let { m ->
+            val what = slot(m.groupValues[1])
+            if (what.isNotEmpty() && what.split(" ").size <= 4) {
+                return Guess(Command(Command.Action.SEARCH_FILE, target = what), minOf(0.8f, cap))
+            }
+        }
+
+        LIST.find(lower)?.let { m ->
+            return Guess(
+                Command(Command.Action.LIST_FILES, from = slot(m.groupValues[1])),
+                minOf(0.8f, cap)
+            )
+        }
+
+        if (Regex("""\bsettings?\b""").containsMatchIn(lower) && words <= 4) {
+            return Guess(Command(Command.Action.OPEN_SETTINGS), minOf(0.9f, cap))
+        }
+
+        OPEN.find(lower)?.let { m ->
+            val name = slot(m.groupValues[1].ifEmpty { m.groupValues[2] })
+            if (name.isNotEmpty() && name.split(" ").size <= 4) {
+                val entry = AppIndex.find(context, name)
+                if (entry != null) {
+                    return Guess(
+                        Command(Command.Action.OPEN_APP, target = entry.label),
+                        minOf(0.92f, cap)
+                    )
+                }
+                return Guess(Command(Command.Action.OPEN_APP, target = name), minOf(0.4f, cap))
+            }
+        }
+
+        // Bare app name with no verb at all: "WhatsApp".
+        if (words <= 3) {
+            AppIndex.find(context, slot(lower))?.let {
+                return Guess(Command(Command.Action.OPEN_APP, target = it.label), minOf(0.82f, cap))
+            }
+        }
+
+        return Guess(Command(Command.Action.UNKNOWN, text = spoken), 0f)
+    }
+
+    /** A real name or app name: short, and not a leftover clause. */
+    private fun nameLooksClean(value: String): Boolean {
+        val parts = value.split(" ").filter { it.isNotBlank() }
+        if (parts.isEmpty() || parts.size > 3) return false
+        // Clause words mean a sentence was sliced, not a name extracted.
+        val clause = listOf("jisme", "jismein", "jiska", "jiske", "aur", "phir", "karo", "kar")
+        return parts.none { it in clause }
+    }
+
+    /** Helper verbs that sit after the real one: "open KARO", "likh DO". */
+    private val AUX = setOf(
+        "karo", "kar", "kijiye", "kariye", "karein", "karna", "karun",
+        "do", "dijiye", "de", "dena", "please", "zara", "na"
+    )
+
+    private val OPEN_VERBS = setOf(
+        "kholo", "kholiye", "kholie", "kholna", "khol", "open", "launch", "chalu", "start"
+    )
+
+    private val CALL_VERBS = setOf(
+        "call", "phone", "dial", "milao", "milaiye", "lagao", "lagaiye", "laga"
+    )
+
+    /** The last word once the helper verbs are peeled off the end. */
+    private fun mainVerb(lower: String): String {
+        val words = lower.split(Regex("\\s+")).filter { it.isNotBlank() }.toMutableList()
+        while (words.size > 1 && words.last() in AUX) words.removeAt(words.size - 1)
+        return words.lastOrNull().orEmpty()
+    }
+
+    /** Hindi case markers, which cling to the end of a slot: "mummy ko". */
+    private val TAIL = setOf("ko", "ka", "ki", "ke", "se", "par", "pe", "pr", "mein", "me")
+
+    private fun slot(value: String): String {
+        val words = value.trim().trim(',', '.', '!', '?', ':', ';')
+            .split(Regex("\\s+"))
+            .filter { it.isNotBlank() && it !in FILLER }
+            .toMutableList()
+
+        while (words.isNotEmpty() && words.last() in TAIL) words.removeAt(words.size - 1)
+
+        return words.joinToString(" ").trim()
+    }
+
+    // --------------------------------------------------------------- gemini
+
+    private fun gemini(context: Context, spoken: String): Command? {
         val key = Settings.geminiKey(context)
         if (key.isEmpty()) return null
 
@@ -64,8 +346,9 @@ object CommandParser {
         val appList = AppIndex.load(context).take(80).joinToString(", ") { it.label }
 
         val prompt = """
-            You convert a spoken phone command into JSON. The speaker mixes Hindi
-            and English (Hinglish). Reply with ONLY a JSON object, no markdown.
+            You convert one spoken phone command into JSON. The speaker mixes
+            Hindi and English (Hinglish), often in long sentences. Reply with
+            ONLY a JSON object, no markdown.
 
             Schema:
             {
@@ -82,9 +365,13 @@ object CommandParser {
             Installed apps: $appList
 
             Rules:
+            - "target" must be SHORT: an app name or a person's name, at most
+              three words. Never put a whole clause in it.
             - Use an app name exactly as it appears in the installed list.
-            - "bhej do", "message karo" on WhatsApp means WHATSAPP, not SEND_SMS.
-            - If the user dictates words to write somewhere, that is TYPE_TEXT.
+            - "bhej do" / "message karo" about WhatsApp means WHATSAPP, not SEND_SMS.
+            - If the user asks to open contacts and look someone up, that is
+              OPEN_APP with the contacts app — not CALL.
+            - Only use CALL when the user clearly names ONE person to ring.
             - If you cannot tell, use UNKNOWN rather than guessing an action
               that calls someone or deletes something.
 
@@ -92,9 +379,11 @@ object CommandParser {
         """.trimIndent()
 
         val body = JSONObject().apply {
-            put("contents", JSONArray().put(
-                JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))
-            ))
+            put(
+                "contents", JSONArray().put(
+                    JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))
+                )
+            )
             put("generationConfig", JSONObject().apply {
                 put("temperature", 0.1)
                 put("maxOutputTokens", 400)
@@ -109,10 +398,8 @@ object CommandParser {
 
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            // Kept short on purpose: a voice assistant that pauses for 25
-            // seconds is indistinguishable from one that has crashed.
             connectTimeout = 6000
-            readTimeout = 9000
+            readTimeout = 10000
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
         }
@@ -142,163 +429,19 @@ object CommandParser {
             Command.Action.valueOf(json.optString("action", "UNKNOWN").uppercase(Locale.ROOT))
         }.getOrNull() ?: return null
 
+        val target = json.optString("target").trim()
+
+        // A model that returns a whole clause as the target is making the same
+        // mistake the old rules made, so the same guard applies.
+        if (action == Command.Action.CALL && !nameLooksClean(target)) return null
+
         return Command(
             action = action,
-            target = json.optString("target").trim(),
+            target = target,
             text = json.optString("text").trim(),
             from = json.optString("from").trim(),
             to = json.optString("to").trim(),
             speak = json.optString("speak").trim()
         )
     }
-
-    // -------------------------------------------------------------- rules
-
-    // Recognition returns polite and inflected forms far more often than the
-    // dictionary form: "kholie", "khol dijiye", "kar dijiye".
-    private val openWords = listOf(
-        "kholiye", "kholie", "khol dijiye", "khol do", "kholo", "kholna", "khol",
-        "open karo", "open kar", "open", "chalu karo", "chalu kar", "start karo", "start"
-    )
-    private val callWords = listOf(
-        "call kijiye", "call karo", "call kar", "call",
-        "phone kijiye", "phone karo", "milao", "milaiye", "lagao", "lagaiye", "dial"
-    )
-    private val whatsappWords = listOf("whatsapp", "whats app", "watsapp")
-    private val smsWords = listOf(
-        "sms bhejiye", "sms bhejo", "sms karo", "sms",
-        "message bhejo", "message bhejiye", "text bhejo", "massage"
-    )
-    private val folderWords = listOf(
-        "folder banaiye", "folder banao", "folder bana", "new folder", "folder create",
-        "naya folder"
-    )
-    private val moveWords = listOf("move karo", "move kar", "shift karo", "hatao yahan", "daal do")
-    private val copyWords = listOf("copy karo", "copy kar", "nakal")
-    private val deleteWords = listOf("delete karo", "hata do", "mita do", "remove karo")
-    private val listWords = listOf(
-        "files dikhao", "files dikhaiye", "kya hai", "kya rakha hai",
-        "list karo", "dikhaiye", "dikhao"
-    )
-    private val typeWords = listOf(
-        "likh dijiye", "likh do", "likho", "likhiye", "type karo", "type kar", "write"
-    )
-
-    private fun parseWithRules(context: Context, spoken: String): Command {
-        val lower = spoken.lowercase(Locale.ROOT)
-
-        // WhatsApp is checked before the generic call/message words, because
-        // "whatsapp par bhej do" contains "bhej do" too.
-        if (whatsappWords.any { lower.contains(it) } && !openOnly(lower)) {
-            val to = afterAny(lower, listOf("ko", "to")).ifEmpty { "" }
-            val msg = afterAny(lower, listOf("likho", "bhejo", "message", "bol do", ":"))
-            if (to.isNotEmpty() || msg.isNotEmpty()) {
-                return Command(
-                    Command.Action.WHATSAPP,
-                    target = cleanName(to),
-                    text = msg.trim()
-                )
-            }
-        }
-
-        if (callWords.any { lower.contains(it) }) {
-            val who = removeWords(lower, callWords + listOf("ko", "please", "zara"))
-            if (who.isNotBlank()) return Command(Command.Action.CALL, target = cleanName(who))
-        }
-
-        if (smsWords.any { lower.contains(it) }) {
-            val to = afterAny(lower, listOf("ko"))
-            val msg = afterAny(lower, listOf("likho", "bhejo", ":"))
-            return Command(Command.Action.SEND_SMS, target = cleanName(to), text = msg.trim())
-        }
-
-        if (folderWords.any { lower.contains(it) }) {
-            val name = afterAny(lower, listOf("naam", "name", "folder banao", "folder bana"))
-            val parent = afterAny(lower, listOf("mein", "me", "in"))
-            return Command(
-                Command.Action.CREATE_FOLDER,
-                from = cleanName(parent),
-                to = cleanName(name).ifEmpty { "Naya Folder" }
-            )
-        }
-
-        if (moveWords.any { lower.contains(it) }) {
-            return Command(
-                Command.Action.MOVE_FILE,
-                from = cleanName(betweenAny(lower, listOf("file", "wali"), listOf("ko", "ko "))),
-                to = cleanName(afterAny(lower, listOf("mein", "me", "folder mein")))
-            )
-        }
-
-        if (copyWords.any { lower.contains(it) }) {
-            return Command(
-                Command.Action.COPY_FILE,
-                from = cleanName(betweenAny(lower, listOf("file", "wali"), listOf("ko"))),
-                to = cleanName(afterAny(lower, listOf("mein", "me")))
-            )
-        }
-
-        if (deleteWords.any { lower.contains(it) }) {
-            return Command(
-                Command.Action.DELETE_FILE,
-                from = cleanName(removeWords(lower, deleteWords + listOf("file", "ko")))
-            )
-        }
-
-        if (typeWords.any { lower.contains(it) }) {
-            val what = afterAny(lower, typeWords)
-            if (what.isNotBlank()) return Command(Command.Action.TYPE_TEXT, text = what.trim())
-        }
-
-        if (listWords.any { lower.contains(it) }) {
-            return Command(
-                Command.Action.LIST_FILES,
-                from = cleanName(afterAny(lower, listOf("mein", "me", "ki", "folder")))
-            )
-        }
-
-        if (lower.contains("settings")) return Command(Command.Action.OPEN_SETTINGS)
-
-        // Anything left that names an installed app is treated as "open it".
-        val stripped = removeWords(lower, openWords + listOf("app", "zara", "please"))
-        AppIndex.find(context, stripped)?.let {
-            return Command(Command.Action.OPEN_APP, target = it.label)
-        }
-
-        return Command(Command.Action.UNKNOWN, text = spoken)
-    }
-
-    private fun openOnly(lower: String): Boolean =
-        openWords.any { lower.contains(it) } &&
-            !lower.contains("bhej") && !lower.contains("message") && !lower.contains("likh")
-
-    private fun afterAny(text: String, markers: List<String>): String {
-        for (m in markers) {
-            val i = text.indexOf(m)
-            if (i >= 0) return text.substring(i + m.length).trim()
-        }
-        return ""
-    }
-
-    private fun betweenAny(text: String, start: List<String>, end: List<String>): String {
-        val from = (start.firstNotNullOfOrNull { m ->
-            text.indexOf(m).takeIf { it >= 0 }?.plus(m.length)
-        } ?: 0).coerceIn(0, text.length)
-
-        val rest = text.substring(from)
-
-        val to = (end.firstNotNullOfOrNull { m -> rest.indexOf(m).takeIf { it > 0 } }
-            ?: rest.length).coerceIn(0, rest.length)
-
-        return rest.substring(0, to).trim()
-    }
-
-    private fun removeWords(text: String, words: List<String>): String {
-        var out = text
-        words.forEach { out = out.replace(it, " ") }
-        return out.trim().replace(Regex("\\s+"), " ")
-    }
-
-    private fun cleanName(value: String): String =
-        value.trim().trim(',', '.', '!', '?', ':').trim()
 }

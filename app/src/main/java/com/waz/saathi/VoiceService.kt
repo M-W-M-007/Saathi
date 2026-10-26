@@ -137,7 +137,9 @@ class VoiceService : Service() {
         val bubbleLabel = if (Settings.showBubble(this)) "Bubble chhupao" else "Bubble dikhao"
 
         val notif: Notification = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("Saathi tayyar hai")
+            // The version is here on purpose: when something does not behave
+            // as expected, the first question is always which build is running.
+            .setContentTitle("Saathi v${BuildConfig.VERSION_NAME} tayyar hai")
             .setContentText(
                 if (Settings.showBubble(this)) "Bubble dabakar boliye"
                 else "Yahan \"Suno\" dabakar boliye"
@@ -303,13 +305,59 @@ class VoiceService : Service() {
 
         val needsAsk = command.needsConfirmation && Settings.confirmActions(this)
 
-        if (needsAsk) {
-            pending = command
-            showConfirm(command, spoken)
-            Speaker.say(this, command.describe())
-        } else {
+        if (!needsAsk) {
             execute(command, spoken)
+            return
         }
+
+        // For anything aimed at a person, the confirmation names the contact
+        // and shows the number. "S ko call karun?" told the user nothing; the
+        // number is what makes a wrong match obvious before it is dialled.
+        val person = command.action in setOf(
+            Command.Action.CALL, Command.Action.SEND_SMS, Command.Action.WHATSAPP
+        )
+
+        // "WhatsApp kholo" arrives here with no one named: nothing to look up,
+        // so it goes straight to the ordinary confirmation.
+        if (!person || command.target.isBlank()) {
+            pending = command
+            showConfirm(command.describe(), spoken)
+            Speaker.say(this, command.describe())
+            return
+        }
+
+        updatePanel("Contact dhoondh raha hoon…", spoken)
+
+        Thread {
+            val found = runCatching { ContactIndex.candidates(this, command.target) }
+                .getOrElse { emptyList() }
+
+            main.post {
+                if (found.isEmpty()) {
+                    val msg = "\"${command.target}\" contacts mein nahi mila."
+                    updatePanel(msg, spoken)
+                    Speaker.say(this, msg)
+                    return@post
+                }
+
+                val best = found.first()
+                // The number is carried forward so the action cannot re-run the
+                // lookup and land on a different contact; the name rides along
+                // in `speak` purely so messages read back nicely.
+                pending = command.copy(target = best.number, speak = best.name)
+
+                val verb = when (command.action) {
+                    Command.Action.CALL -> "ko call karun?"
+                    Command.Action.SEND_SMS -> "ko SMS bhejun?"
+                    else -> "ko WhatsApp bhejun?"
+                }
+
+                val others = found.drop(1).map { "ya: ${it.name} — ${it.number}" }
+
+                showConfirm("${best.name} — ${best.number}\n$verb", spoken, others)
+                Speaker.say(this, "${best.name} $verb")
+            }
+        }.start()
     }
 
     private fun execute(command: Command, spoken: String) {
@@ -348,6 +396,14 @@ class VoiceService : Service() {
 
         view.findViewById<View>(R.id.panelClose).setOnClickListener { removePanel() }
         view.findViewById<View>(R.id.panelAgain).setOnClickListener { beginListening() }
+
+        view.findViewById<View>(R.id.panelHideMic).setOnClickListener {
+            Settings.setShowBubble(this, false)
+            hideBubble()
+            startAsForeground()
+            removePanel()
+            toast("Mic hat gaya. Notification mein \"Suno\" se wapas bula sakte hain.")
+        }
 
         view.findViewById<View>(R.id.panelYes).setOnClickListener {
             pending?.let { execute(it, currentHeard(view)) }
@@ -396,10 +452,16 @@ class VoiceService : Service() {
             if (confirming) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.panelAgain).visibility =
             if (confirming) View.GONE else View.VISIBLE
+        view.findViewById<View>(R.id.panelHideMic).visibility =
+            if (confirming) View.GONE else View.VISIBLE
     }
 
-    private fun showConfirm(command: Command, heard: String) {
-        updatePanel(command.describe(), heard)
+    private fun showConfirm(
+        question: String,
+        heard: String,
+        details: List<String> = emptyList()
+    ) {
+        updatePanel(question, heard, details)
     }
 
     private fun removePanel() {

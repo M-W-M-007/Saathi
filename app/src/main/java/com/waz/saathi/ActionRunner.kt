@@ -24,9 +24,9 @@ object ActionRunner {
 
     fun run(context: Context, command: Command): Outcome = when (command.action) {
         Command.Action.OPEN_APP -> openApp(context, command.target)
-        Command.Action.CALL -> call(context, command.target)
-        Command.Action.SEND_SMS -> sendSms(context, command.target, command.text)
-        Command.Action.WHATSAPP -> whatsapp(context, command.target, command.text)
+        Command.Action.CALL -> call(context, command.target, command.speak)
+        Command.Action.SEND_SMS -> sendSms(context, command.target, command.text, command.speak)
+        Command.Action.WHATSAPP -> whatsapp(context, command.target, command.text, command.speak)
         Command.Action.TYPE_TEXT -> typeText(context, command.text)
         Command.Action.CREATE_FOLDER -> createFolder(command.from, command.to)
         Command.Action.MOVE_FILE -> moveOrCopy(command, move = true)
@@ -62,11 +62,18 @@ object ActionRunner {
 
     // --------------------------------------------------------------- calls
 
-    private fun call(context: Context, who: String): Outcome {
+    /**
+     * [label] is the contact name the user already confirmed on screen. It is
+     * only used for the message read back, so the lookup is never repeated and
+     * cannot land on a different contact than the one that was agreed to.
+     */
+    private fun call(context: Context, who: String, label: String): Outcome {
         if (who.isBlank()) return Outcome(false, "Kisko call karna hai?")
 
         val contact = ContactIndex.resolve(context, who)
             ?: return Outcome(false, "\"$who\" contacts mein nahi mila.")
+
+        val name = label.ifBlank { contact.name }
 
         // The dialler is opened with the number already in it. Placing the call
         // directly would need CALL_PHONE, which this app deliberately does not
@@ -76,15 +83,17 @@ object ActionRunner {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
 
-        return Outcome(true, "${contact.name} ka number dial par hai — call button dabayein.")
+        return Outcome(true, "$name ka number dial par hai — call button dabayein.")
     }
 
-    private fun sendSms(context: Context, who: String, body: String): Outcome {
+    private fun sendSms(context: Context, who: String, body: String, label: String): Outcome {
         if (who.isBlank()) return Outcome(false, "Kisko SMS bhejna hai?")
         if (body.isBlank()) return Outcome(false, "SMS mein kya likhna hai?")
 
         val contact = ContactIndex.resolve(context, who)
             ?: return Outcome(false, "\"$who\" contacts mein nahi mila.")
+
+        val name = label.ifBlank { contact.name }
 
         // Handed to the messaging app with the text already written. Sending it
         // silently would need SEND_SMS, which this app does not request.
@@ -93,7 +102,7 @@ object ActionRunner {
                 .putExtra("sms_body", body)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
-        return Outcome(true, "${contact.name} ke liye SMS tayyar hai — send dabayein.")
+        return Outcome(true, "$name ke liye SMS tayyar hai — send dabayein.")
     }
 
     /**
@@ -101,7 +110,7 @@ object ActionRunner {
      * typed; sending it needs one tap, or the accessibility service if the user
      * has turned that on.
      */
-    private fun whatsapp(context: Context, who: String, body: String): Outcome {
+    private fun whatsapp(context: Context, who: String, body: String, label: String): Outcome {
         if (!AppIndex.packageInstalled(context, "com.whatsapp") &&
             !AppIndex.packageInstalled(context, "com.whatsapp.w4b")
         ) {
@@ -118,6 +127,8 @@ object ActionRunner {
         val contact = ContactIndex.resolve(context, who)
             ?: return Outcome(false, "\"$who\" contacts mein nahi mila.")
 
+        val name = label.ifBlank { contact.name }
+
         val number = contact.number.filter { it.isDigit() }.let {
             if (it.length == 10) "91$it" else it      // assume India when no code
         }
@@ -133,13 +144,13 @@ object ActionRunner {
         val autoSend = SaathiAccessibilityService.isRunning
         if (autoSend && body.isNotBlank()) {
             SaathiAccessibilityService.requestSend()
-            return Outcome(true, "${contact.name} ko WhatsApp message bhej raha hoon.")
+            return Outcome(true, "$name ko WhatsApp message bhej raha hoon.")
         }
 
         return Outcome(
             true,
-            if (body.isBlank()) "${contact.name} ka chat khul gaya."
-            else "${contact.name} ka chat khula hai, message likha hua hai — send dabayein."
+            if (body.isBlank()) "$name ka chat khul gaya."
+            else "$name ka chat khula hai, message likha hua hai — send dabayein."
         )
     }
 
