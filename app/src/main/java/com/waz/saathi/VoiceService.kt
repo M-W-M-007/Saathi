@@ -19,6 +19,7 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.math.abs
@@ -61,6 +62,12 @@ class VoiceService : Service() {
 
     /** Command waiting for a yes/no. */
     private var pending: Command? = null
+
+    /** Choices waiting for a tap, when more than one thing could have been meant. */
+    private var choices: List<Pair<String, Command>> = emptyList()
+
+    /** A multi-step plan waiting for one yes. */
+    private var plan: List<Command> = emptyList()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -239,6 +246,8 @@ class VoiceService : Service() {
     private fun beginListening() {
         Speaker.stop()
         pending = null
+        choices = emptyList()
+        plan = emptyList()
         showPanel("Sun raha hoon…", "")
 
         speech.start(object : SpeechInput.Callback {
@@ -283,24 +292,66 @@ class VoiceService : Service() {
 
         // Parsing may call the network, so it never runs on the main thread.
         Thread {
-            val command = runCatching { CommandParser.parse(this, spoken) }
-                .getOrElse { Command(Command.Action.UNKNOWN, text = spoken) }
+            val steps = runCatching { CommandParser.plan(this, spoken) }
+                .getOrElse { listOf(Command(Command.Action.UNKNOWN, text = spoken)) }
 
             main.post {
                 if (settled.compareAndSet(false, true)) {
                     main.removeCallbacks(timeout)
-                    onParsed(spoken, command)
+                    onPlanned(spoken, steps)
                 }
             }
         }.start()
     }
 
-    private fun onParsed(spoken: String, command: Command) {
-        if (command.action == Command.Action.UNKNOWN) {
+    private fun onPlanned(spoken: String, steps: List<Command>) {
+        val real = steps.filter { it.action != Command.Action.UNKNOWN }
+
+        if (real.isEmpty()) {
             val msg = "Yeh samajh nahi aaya."
             updatePanel(msg, spoken)
             Speaker.say(this, msg)
+            Conversation.add(spoken, msg)
             return
+        }
+
+        // Several jobs in one sentence are shown as a numbered plan and
+        // confirmed once, rather than running silently one after another.
+        if (real.size > 1) {
+            plan = real
+            pending = null
+            choices = emptyList()
+            updatePanel(
+                "${real.size} kaam karne hain — karun?",
+                spoken,
+                real.mapIndexed { i, c -> "${i + 1}. ${c.describe().trimEnd('?')}" }
+            )
+            Speaker.say(this, "${real.size} kaam karne hain, karun?")
+            return
+        }
+
+        onParsed(spoken, real.first())
+    }
+
+    private fun onParsed(spoken: String, command: Command) {
+
+        // Two apps whose names overlap — WhatsApp and WhatsApp Business — are
+        // one slip of recognition apart. Asking costs one tap; guessing cost
+        // the user the whole command.
+        if (command.action == Command.Action.OPEN_APP &&
+            command.hint.isNotEmpty() &&
+            AppIndex.ambiguous(this, command.hint)
+        ) {
+            val apps = AppIndex.matches(this, command.hint)
+            if (apps.size > 1) {
+                showChoices(
+                    "Kaunsi app?", spoken,
+                    apps.map { app ->
+                        app.label to Command(Command.Action.OPEN_APP, target = app.label)
+                    }
+                )
+                return
+            }
         }
 
         val needsAsk = command.needsConfirmation && Settings.confirmActions(this)
@@ -340,28 +391,49 @@ class VoiceService : Service() {
                     return@post
                 }
 
-                val best = found.first()
-                // The number is carried forward so the action cannot re-run the
-                // lookup and land on a different contact; the name rides along
-                // in `speak` purely so messages read back nicely.
-                pending = command.copy(target = best.number, speak = best.name)
-
                 val verb = when (command.action) {
                     Command.Action.CALL -> "ko call karun?"
                     Command.Action.SEND_SMS -> "ko SMS bhejun?"
                     else -> "ko WhatsApp bhejun?"
                 }
 
-                val others = found.drop(1).map { "ya: ${it.name} — ${it.number}" }
+                // The number is carried forward so the action cannot re-run the
+                // lookup and land on a different contact; the name rides along
+                // in `speak` purely so messages read back nicely.
+                if (found.size > 1) {
+                    showChoices(
+                        "Kaunsa contact?", spoken,
+                        found.map { c ->
+                            "${c.name} — ${c.number}" to
+                                command.copy(target = c.number, speak = c.name)
+                        }
+                    )
+                    Speaker.say(this, "Kaunsa contact?")
+                    return@post
+                }
 
-                showConfirm("${best.name} — ${best.number}\n$verb", spoken, others)
+                val best = found.first()
+                pending = command.copy(target = best.number, speak = best.name)
+                showConfirm("${best.name} — ${best.number}\n$verb", spoken)
                 Speaker.say(this, "${best.name} $verb")
             }
         }.start()
     }
 
+    private fun showChoices(
+        title: String,
+        heard: String,
+        items: List<Pair<String, Command>>
+    ) {
+        pending = null
+        choices = items
+        updatePanel(title, heard)
+    }
+
     private fun execute(command: Command, spoken: String) {
         pending = null
+        choices = emptyList()
+        plan = emptyList()
         updatePanel("Kar raha hoon…", spoken)
 
         Thread {
@@ -372,6 +444,51 @@ class VoiceService : Service() {
                 updatePanel(outcome.message, spoken, outcome.details)
                 Speaker.say(this, outcome.message)
                 History.add(this, spoken, outcome.message, outcome.ok)
+                Conversation.add(spoken, outcome.message)
+            }
+        }.start()
+    }
+
+    /**
+     * Runs the steps in order and stops at the first failure, so a bad second
+     * step cannot leave half the work done with no word about it.
+     */
+    private fun runPlan(steps: List<Command>, spoken: String) {
+        pending = null
+        choices = emptyList()
+        plan = emptyList()
+
+        Thread {
+            val lines = mutableListOf<String>()
+            var failed = false
+
+            for ((index, step) in steps.withIndex()) {
+                val shown = lines.toList()
+                main.post { updatePanel("Step ${index + 1} / ${steps.size}…", spoken, shown) }
+
+                val outcome = runCatching { ActionRunner.run(this, step) }
+                    .getOrElse { ActionRunner.Outcome(false, "Error: ${it.localizedMessage}") }
+
+                lines.add(if (outcome.ok) "OK — ${outcome.message}" else "RUKA — ${outcome.message}")
+                lines.addAll(outcome.details)
+
+                if (!outcome.ok) {
+                    failed = true
+                    break
+                }
+            }
+
+            val done = if (failed) steps.size - 1 else steps.size
+            val summary =
+                if (failed) "Step ${lines.count { it.startsWith("OK") } + 1} par ruk gaya."
+                else "Saare $done kaam ho gaye."
+
+            val shown = lines.toList()
+            main.post {
+                updatePanel(summary, spoken, shown)
+                Speaker.say(this, summary)
+                History.add(this, spoken, summary, !failed)
+                Conversation.add(spoken, summary + " " + shown.joinToString("; "))
             }
         }.start()
     }
@@ -406,10 +523,14 @@ class VoiceService : Service() {
         }
 
         view.findViewById<View>(R.id.panelYes).setOnClickListener {
-            pending?.let { execute(it, currentHeard(view)) }
+            val heard = currentHeard(view)
+            val steps = plan
+            if (steps.isNotEmpty()) runPlan(steps, heard)
+            else pending?.let { execute(it, heard) }
         }
         view.findViewById<View>(R.id.panelNo).setOnClickListener {
             pending = null
+            plan = emptyList()
             updatePanel("Theek hai, rehne diya.", "")
         }
 
@@ -447,13 +568,44 @@ class VoiceService : Service() {
             text = details.joinToString("\n")
         }
 
-        val confirming = pending != null
+        renderChoices(view, heard)
+
+        val asking = pending != null || plan.isNotEmpty()
+        val busy = asking || choices.isNotEmpty()
         view.findViewById<View>(R.id.confirmRow).visibility =
-            if (confirming) View.VISIBLE else View.GONE
+            if (asking) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.panelAgain).visibility =
-            if (confirming) View.GONE else View.VISIBLE
+            if (busy) View.GONE else View.VISIBLE
         view.findViewById<View>(R.id.panelHideMic).visibility =
-            if (confirming) View.GONE else View.VISIBLE
+            if (busy) View.GONE else View.VISIBLE
+    }
+
+    private fun renderChoices(view: View, heard: String) {
+        val row = view.findViewById<LinearLayout>(R.id.optionsRow)
+        row.removeAllViews()
+
+        if (choices.isEmpty()) {
+            row.visibility = View.GONE
+            return
+        }
+
+        row.visibility = View.VISIBLE
+
+        choices.forEach { (label, command) ->
+            val button = TextView(this).apply {
+                text = label
+                setTextColor(0xFFFFFFFF.toInt())
+                setBackgroundColor(0xFF2E7D52.toInt())
+                setPadding(28, 26, 28, 26)
+                textSize = 15f
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = 10 }
+                setOnClickListener { execute(command, heard) }
+            }
+            row.addView(button)
+        }
     }
 
     private fun showConfirm(
@@ -467,6 +619,8 @@ class VoiceService : Service() {
     private fun removePanel() {
         Speaker.stop()
         pending = null
+        choices = emptyList()
+        plan = emptyList()
         panel?.let { runCatching { windowManager.removeView(it) } }
         panel = null
     }

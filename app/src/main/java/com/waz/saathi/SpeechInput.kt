@@ -101,6 +101,16 @@ class SpeechInput(private val context: Context) {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, chosen)
             }
 
+            // The recogniser was cutting sentences off mid-way, because its
+            // default idea of "finished" is a short pause. These give room to
+            // think in the middle of a long instruction.
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 2500L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2200L)
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                2200L
+            )
+
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)

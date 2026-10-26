@@ -48,6 +48,19 @@
             android:visibility="gone" />
     </ScrollView>
 
+    <!--
+      Shown when more than one thing could have been meant — two apps with
+      similar names, or two contacts. Guessing between them is what sent
+      "WhatsApp Business kholo" to plain WhatsApp, so now the user picks.
+    -->
+    <LinearLayout
+        android:id="@+id/optionsRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:orientation="vertical"
+        android:visibility="gone" />
+
     <!-- Only shown when something is waiting for a yes or no. -->
     <LinearLayout
         android:id="@+id/confirmRow"

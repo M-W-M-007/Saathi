@@ -18,7 +18,14 @@ data class Command(
     /** Destination path for file moves, copies and new folders. */
     val to: String = "",
     /** What the assistant will say back before doing it. */
-    val speak: String = ""
+    val speak: String = "",
+    /**
+     * The words the user actually used for [target], before any matching.
+     * Kept so the UI can offer the near misses — "WhatsApp" and "WhatsApp
+     * Business" are one letter of recognition apart, and picking silently is
+     * how the wrong one kept opening.
+     */
+    val hint: String = ""
 ) {
     enum class Action {
         OPEN_APP,

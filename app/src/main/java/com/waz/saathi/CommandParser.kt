@@ -35,23 +35,42 @@ object CommandParser {
     /** Below this the rules are not worth acting on even with no model. */
     private const val FLOOR = 0.45f
 
-    fun parse(context: Context, spoken: String): Command {
+    /** Words that mean "what you just did was wrong", not a fresh command. */
+    private val CORRECTION = listOf(
+        "nahi", "nahin", "galat", "wo nahi", "ye nahi", "doosra", "dusra",
+        "second wala", "maine kaha", "arre"
+    )
+
+    fun parse(context: Context, spoken: String): Command =
+        plan(context, spoken).firstOrNull() ?: Command(Command.Action.UNKNOWN, text = spoken)
+
+    /**
+     * One sentence can be several jobs: "folder banao aur ye file usme daal do".
+     * The rules only ever produce one step; the model produces the rest.
+     */
+    fun plan(context: Context, spoken: String): List<Command> {
         val text = spoken.trim()
-        if (text.isEmpty()) return Command(Command.Action.UNKNOWN)
+        if (text.isEmpty()) return emptyList()
+
+        val lower = text.lowercase(Locale.ROOT)
+        val correcting = !Conversation.isEmpty() &&
+            CORRECTION.any { lower.contains(Regex("""\b${Regex.escape(it)}\b""")) }
 
         val guess = runCatching { rules(context, text) }
             .getOrElse { Guess(Command(Command.Action.UNKNOWN, text = text), 0f) }
 
-        if (guess.confidence >= TRUST_RULES) return guess.command
+        // A correction always goes to the model, however confident the rules
+        // are: the rules cannot see what they are correcting.
+        if (!correcting && guess.confidence >= TRUST_RULES) return listOf(guess.command)
 
         if (Settings.geminiKey(context).isNotEmpty()) {
-            runCatching { gemini(context, text) }.getOrNull()
-                ?.takeIf { it.action != Command.Action.UNKNOWN }
-                ?.let { return it }
+            val steps = runCatching { gemini(context, text) }.getOrNull().orEmpty()
+                .filter { it.action != Command.Action.UNKNOWN }
+            if (steps.isNotEmpty()) return steps
         }
 
-        return if (guess.confidence >= FLOOR) guess.command
-        else Command(Command.Action.UNKNOWN, text = text)
+        if (guess.confidence >= FLOOR) return listOf(guess.command)
+        return listOf(Command(Command.Action.UNKNOWN, text = text))
     }
 
     // ------------------------------------------------------------- patterns
@@ -171,7 +190,10 @@ object CommandParser {
                     AppIndex.find(context, name)?.let {
                         // A named app that is actually installed is as certain
                         // as this gets, mixed wording or not.
-                        return Guess(Command(Command.Action.OPEN_APP, target = it.label), 0.93f)
+                        return Guess(
+                            Command(Command.Action.OPEN_APP, target = it.label, hint = name),
+                            0.93f
+                        )
                     }
                 }
             }
@@ -274,18 +296,25 @@ object CommandParser {
                 val entry = AppIndex.find(context, name)
                 if (entry != null) {
                     return Guess(
-                        Command(Command.Action.OPEN_APP, target = entry.label),
+                        Command(Command.Action.OPEN_APP, target = entry.label, hint = name),
                         minOf(0.92f, cap)
                     )
                 }
-                return Guess(Command(Command.Action.OPEN_APP, target = name), minOf(0.4f, cap))
+                return Guess(
+                    Command(Command.Action.OPEN_APP, target = name, hint = name),
+                    minOf(0.4f, cap)
+                )
             }
         }
 
         // Bare app name with no verb at all: "WhatsApp".
         if (words <= 3) {
-            AppIndex.find(context, slot(lower))?.let {
-                return Guess(Command(Command.Action.OPEN_APP, target = it.label), minOf(0.82f, cap))
+            val bare = slot(lower)
+            AppIndex.find(context, bare)?.let {
+                return Guess(
+                    Command(Command.Action.OPEN_APP, target = it.label, hint = bare),
+                    minOf(0.82f, cap)
+                )
             }
         }
 
@@ -338,42 +367,64 @@ object CommandParser {
 
     // --------------------------------------------------------------- gemini
 
-    private fun gemini(context: Context, spoken: String): Command? {
+    private fun gemini(context: Context, spoken: String): List<Command>? {
         val key = Settings.geminiKey(context)
         if (key.isEmpty()) return null
 
         // Only app labels are sent — no contacts, no file contents.
         val appList = AppIndex.load(context).take(80).joinToString(", ") { it.label }
 
+        val history = Conversation.recent().ifBlank { "(abhi tak kuch nahi)" }
+
         val prompt = """
-            You convert one spoken phone command into JSON. The speaker mixes
-            Hindi and English (Hinglish), often in long sentences. Reply with
-            ONLY a JSON object, no markdown.
+            You convert a spoken phone command into JSON. The speaker mixes
+            Hindi and English (Hinglish), often in long sentences, and may be
+            correcting something you got wrong a moment ago. Reply with ONLY a
+            JSON object, no markdown.
 
             Schema:
             {
-              "action": one of OPEN_APP, CALL, SEND_SMS, WHATSAPP, TYPE_TEXT,
-                        CREATE_FOLDER, MOVE_FILE, COPY_FILE, DELETE_FILE,
-                        LIST_FILES, SEARCH_FILE, OPEN_SETTINGS, UNKNOWN,
-              "target": app name / contact name / phone number / file name,
-              "text":   message body or text to type,
-              "from":   source file or folder,
-              "to":     destination folder, or new folder name for CREATE_FOLDER,
-              "speak":  one short Hinglish line confirming what you understood
+              "steps": [
+                {
+                  "action": one of OPEN_APP, CALL, SEND_SMS, WHATSAPP, TYPE_TEXT,
+                            CREATE_FOLDER, MOVE_FILE, COPY_FILE, DELETE_FILE,
+                            LIST_FILES, SEARCH_FILE, OPEN_SETTINGS, UNKNOWN,
+                  "target": app name / contact name / phone number / file name,
+                  "text":   message body or text to type,
+                  "from":   source file or folder,
+                  "to":     destination folder, or new folder name for CREATE_FOLDER,
+                  "speak":  one short Hinglish line saying what this step does
+                }
+              ]
             }
 
             Installed apps: $appList
 
+            What happened just before (oldest first):
+            $history
+
             Rules:
+            - One sentence can be several jobs. "folder banao aur ye file usme
+              daal do" is TWO steps: CREATE_FOLDER then MOVE_FILE. Put them in
+              "steps" in the order they must run. Most commands are one step.
+            - If the user is correcting the previous turn ("nahi, business wala",
+              "galat app khul gayi"), work out what they actually meant from the
+              history and return THAT command — not UNKNOWN.
             - "target" must be SHORT: an app name or a person's name, at most
               three words. Never put a whole clause in it.
-            - Use an app name exactly as it appears in the installed list.
+            - Use an app name exactly as it appears in the installed list. If
+              two labels are similar, pick the one the user said in full —
+              "WhatsApp Business" is not "WhatsApp".
+            - Folder names: Download, Documents, Pictures, DCIM, Movies, Music.
+            - For MOVE_FILE and COPY_FILE: "from" is the file, "to" is the
+              destination folder. For CREATE_FOLDER: "to" is the new folder's
+              name and "from" is the folder it goes inside (may be empty).
             - "bhej do" / "message karo" about WhatsApp means WHATSAPP, not SEND_SMS.
             - If the user asks to open contacts and look someone up, that is
               OPEN_APP with the contacts app — not CALL.
             - Only use CALL when the user clearly names ONE person to ring.
-            - If you cannot tell, use UNKNOWN rather than guessing an action
-              that calls someone or deletes something.
+            - If you cannot tell, use a single step with action UNKNOWN rather
+              than guessing an action that calls someone or deletes something.
 
             Command: $spoken
         """.trimIndent()
@@ -386,7 +437,7 @@ object CommandParser {
             )
             put("generationConfig", JSONObject().apply {
                 put("temperature", 0.1)
-                put("maxOutputTokens", 400)
+                put("maxOutputTokens", 800)
                 put("responseMimeType", "application/json")
             })
         }.toString()
@@ -416,7 +467,19 @@ object CommandParser {
                 .getJSONObject("content").getJSONArray("parts").getJSONObject(0)
                 .getString("text").trim()
 
-            toCommand(JSONObject(raw))
+            val json = JSONObject(raw)
+
+            // Both shapes are accepted: a bare command, and the list of steps
+            // the prompt asks for. A model that drops the wrapper should not
+            // cost the user their command.
+            val steps = json.optJSONArray("steps")
+            if (steps == null) {
+                listOfNotNull(toCommand(json))
+            } else {
+                (0 until minOf(steps.length(), 6)).mapNotNull { i ->
+                    steps.optJSONObject(i)?.let { toCommand(it) }
+                }
+            }
         } catch (e: Exception) {
             null
         } finally {
@@ -441,7 +504,8 @@ object CommandParser {
             text = json.optString("text").trim(),
             from = json.optString("from").trim(),
             to = json.optString("to").trim(),
-            speak = json.optString("speak").trim()
+            speak = json.optString("speak").trim(),
+            hint = target
         )
     }
 }

@@ -6,9 +6,8 @@ on:
 
 jobs:
   build:
-    # ubuntu-latest ko pin kiya hua hai jaanbujh kar: 19 Oct 2026 se woh label
-    # Ubuntu 26 par shift ho raha hai, aur usi par pehli build tooti thi.
-    # Pin hone se build kal bhi waisi hi chalegi jaisi aaj chali.
+    # Pinned on purpose: the ubuntu-latest label moved to Ubuntu 26 on
+    # 19 Oct 2026 and the Android setup action broke on the new image.
     runs-on: ubuntu-24.04
 
     steps:
@@ -21,9 +20,9 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # android-actions/setup-android jaanbujh kar hataya gaya hai.
-      # GitHub runners mein Android SDK pehle se hota hai aur ANDROID_SDK_ROOT
-      # set hota hai, toh woh action zaroori nahi tha — aur wahi fail ho raha tha.
+      # android-actions/setup-android is deliberately absent: GitHub runners
+      # already ship the Android SDK with ANDROID_SDK_ROOT set, and that action
+      # was the step that kept failing.
 
       - name: Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -35,7 +34,29 @@ jobs:
           echo "SDK: $ANDROID_SDK_ROOT"
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
-          gradle assembleDebug --no-daemon --stacktrace
+
+          # --stacktrace is gone on purpose. It buried every real error under a
+          # few hundred lines of Gradle internals, and GitHub then truncated the
+          # log so the actual message could not be read at all.
+          set -o pipefail
+          gradle assembleDebug --no-daemon 2>&1 | tee build.log || true
+
+      # The errors that matter, printed on the run summary page where they are
+      # short, always visible, and never truncated.
+      - name: Errors (summary)
+        if: always()
+        run: |
+          {
+            echo "## Build errors"
+            echo ''
+            echo '```'
+            grep -E "^e: |^w: .*error|error:|FAILURE:|What went wrong|Caused by:" build.log \
+              | grep -v "org.gradle" | head -60 || echo "(koi error line nahi mili)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: APK bana ya nahi
+        run: test -f app/build/outputs/apk/debug/app-debug.apk
 
       - name: APK upload karein
         uses: actions/upload-artifact@v4

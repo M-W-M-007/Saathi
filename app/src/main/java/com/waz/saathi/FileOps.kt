@@ -37,8 +37,28 @@ object FileOps {
         "video" to "Movies",
         "videos" to "Movies",
         "whatsapp" to "Android/media/com.whatsapp/WhatsApp/Media",
+        "whatsappimages" to "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images",
+        "whatsappdocuments" to "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents",
+        "whatsappvideo" to "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video",
+        "whatsappaudio" to "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Audio",
+        "screenshot" to "Pictures/Screenshots",
+        "screenshots" to "Pictures/Screenshots",
+        "bluetooth" to "Bluetooth",
+        "internalstorage" to "",
+        "phonestorage" to "",
+        "storage" to "",
         "dcim" to "DCIM"
     )
+
+    /**
+     * App sandboxes. They hold tens of thousands of cache files, which made a
+     * search crawl for a minute and then return somebody's thumbnail. The
+     * media folder stays searchable because WhatsApp's files live there.
+     */
+    private val SKIP = listOf("Android/data", "Android/obb")
+
+    /** Stops a search on a huge phone from running until the user gives up. */
+    private const val SCAN_LIMIT = 40_000
 
     fun hasAllFilesAccess(): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Environment.isExternalStorageManager()
@@ -58,7 +78,7 @@ object FileOps {
 
         val key = clean.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
         aliases[key]?.let { rel ->
-            val f = File(root, rel)
+            val f = if (rel.isEmpty()) root else File(root, rel)
             if (f.isDirectory) return f
         }
 
@@ -70,44 +90,86 @@ object FileOps {
 
     private fun findFolder(dir: File, key: String, depth: Int): File? {
         if (depth <= 0) return null
-        val children = dir.listFiles()?.filter { it.isDirectory } ?: return null
+        val children = dir.listFiles()?.filter { it.isDirectory && !skip(it) } ?: return null
 
-        children.firstOrNull {
-            it.name.lowercase(Locale.ROOT).filter { c -> c.isLetterOrDigit() } == key
-        }?.let { return it }
+        children.firstOrNull { normalize(it.name) == key }?.let { return it }
 
         for (child in children) {
-            if (child.name.startsWith(".")) continue
             findFolder(child, key, depth - 1)?.let { return it }
         }
         return null
     }
 
     /** Finds a file by spoken name, optionally inside one folder. */
-    fun findFile(spokenName: String, inFolder: File? = null): File? {
-        val key = spokenName.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
-        if (key.isEmpty()) return null
+    fun findFile(spokenName: String, inFolder: File? = null): File? =
+        findFiles(spokenName, inFolder).firstOrNull()
 
-        val start = inFolder ?: root
-        return search(start, key, depth = 4)
+    /**
+     * Candidates, best first.
+     *
+     * The old search returned the first file whose name merely *contained* the
+     * spoken word, wherever in the tree it turned up — so asking for "report"
+     * could hand back a cached thumbnail from an app's sandbox. Matches are now
+     * ranked, exact names win, and app sandboxes are skipped entirely.
+     */
+    fun findFiles(spokenName: String, inFolder: File? = null, limit: Int = 3): List<File> {
+        val key = normalize(spokenName)
+        if (key.isEmpty()) return emptyList()
+
+        val hits = mutableListOf<Pair<File, Int>>()
+        val budget = intArrayOf(SCAN_LIMIT)
+
+        collect(inFolder ?: root, key, depth = 5, hits = hits, budget = budget)
+
+        return hits
+            .sortedWith(compareBy({ it.second }, { it.first.name.length }))
+            .map { it.first }
+            .take(limit)
     }
 
-    private fun search(dir: File, key: String, depth: Int): File? {
-        if (depth <= 0) return null
-        val children = dir.listFiles() ?: return null
-
-        children.filter { it.isFile }.firstOrNull {
-            val name = it.nameWithoutExtension.lowercase(Locale.ROOT)
-                .filter { c -> c.isLetterOrDigit() }
-            name == key || name.contains(key)
-        }?.let { return it }
+    private fun collect(
+        dir: File,
+        key: String,
+        depth: Int,
+        hits: MutableList<Pair<File, Int>>,
+        budget: IntArray
+    ) {
+        if (depth <= 0 || budget[0] <= 0) return
+        val children = dir.listFiles() ?: return
 
         for (child in children) {
-            if (!child.isDirectory || child.name.startsWith(".")) continue
-            search(child, key, depth - 1)?.let { return it }
+            if (budget[0] <= 0) return
+            budget[0]--
+
+            if (child.isDirectory) {
+                if (!skip(child)) collect(child, key, depth - 1, hits, budget)
+                continue
+            }
+
+            val full = normalize(child.name)
+            val stem = normalize(child.nameWithoutExtension)
+
+            val rank = when {
+                full == key || stem == key -> 0
+                stem.startsWith(key) -> 1
+                stem.contains(key) -> 2
+                else -> continue
+            }
+            hits.add(child to rank)
+
+            // Nothing beats an exact name, so stop paying for a deeper search.
+            if (rank == 0 && hits.count { it.second == 0 } >= 3) return
         }
-        return null
     }
+
+    private fun skip(dir: File): Boolean {
+        if (dir.name.startsWith(".")) return true
+        val path = dir.absolutePath
+        return SKIP.any { path.contains("/$it") }
+    }
+
+    private fun normalize(value: String): String =
+        value.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
 
     fun createFolder(parentSpoken: String, name: String): Result<File> = runCatching {
         val parent = resolveFolder(parentSpoken) ?: root

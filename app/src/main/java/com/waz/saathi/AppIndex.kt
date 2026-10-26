@@ -43,19 +43,46 @@ object AppIndex {
     }
 
     /** Best match for a spoken name, or null when nothing is close enough. */
-    fun find(context: Context, spoken: String): Entry? {
+    fun find(context: Context, spoken: String): Entry? = matches(context, spoken).firstOrNull()
+
+    /**
+     * Candidates, best first, at most three.
+     *
+     * "WhatsApp Business kholo" used to open plain WhatsApp. Both scored a flat
+     * 1.0 because the spoken name contains "whatsapp", and the first of two
+     * equal scores wins — which alphabetically is the wrong one. Containment
+     * now scores by how much of the two names actually overlap, so the longer,
+     * more specific label wins the moment the user says it.
+     */
+    fun matches(context: Context, spoken: String): List<Entry> {
         val needle = normalize(spoken)
-        if (needle.isEmpty()) return null
+        if (needle.isEmpty()) return emptyList()
 
         val apps = load(context)
 
-        apps.firstOrNull { it.normalized == needle }?.let { return it }
+        apps.firstOrNull { it.normalized == needle }?.let { return listOf(it) }
 
         return apps
             .map { it to score(needle, it.normalized) }
             .filter { it.second > 0.55f }
-            .maxByOrNull { it.second }
-            ?.first
+            .sortedByDescending { it.second }
+            .take(3)
+            .map { it.first }
+    }
+
+    /** True when the second-best match is close enough to be worth asking about. */
+    fun ambiguous(context: Context, spoken: String): Boolean {
+        val needle = normalize(spoken)
+        if (needle.isEmpty()) return false
+        if (load(context).any { it.normalized == needle }) return false
+
+        val top = load(context)
+            .map { score(needle, it.normalized) }
+            .filter { it > 0.55f }
+            .sortedDescending()
+            .take(2)
+
+        return top.size == 2 && top[0] - top[1] < 0.18f
     }
 
     fun launchIntent(context: Context, packageName: String): Intent? =
@@ -75,7 +102,16 @@ object AppIndex {
      */
     private fun score(needle: String, hay: String): Float {
         if (needle.isEmpty() || hay.isEmpty()) return 0f
-        if (hay.contains(needle) || needle.contains(hay)) return 1f
+        if (needle == hay) return 1f
+
+        // Containment is graded by overlap, not treated as a perfect match:
+        // "whatsappbusiness" against "whatsapp" is half a match, against
+        // "whatsappbusiness" it is a whole one.
+        if (hay.contains(needle) || needle.contains(hay)) {
+            val ratio = minOf(needle.length, hay.length).toFloat() /
+                maxOf(needle.length, hay.length)
+            return 0.6f + 0.39f * ratio
+        }
 
         var i = 0
         var matched = 0

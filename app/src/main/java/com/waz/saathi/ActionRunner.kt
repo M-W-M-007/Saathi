@@ -245,9 +245,14 @@ object ActionRunner {
         requireStorage()?.let { return it }
         if (name.isBlank()) return Outcome(false, "Kya dhoondhna hai?")
 
-        val found = FileOps.findFile(name)
-            ?: return Outcome(false, "\"$name\" nahi mili.")
+        val found = FileOps.findFiles(name)
+        if (found.isEmpty()) return Outcome(false, "\"$name\" nahi mili.")
 
-        return Outcome(true, "Mili: ${FileOps.shortPath(found)}", listOf(found.absolutePath))
+        return Outcome(
+            true,
+            if (found.size == 1) "Mili: ${found.first().name}"
+            else "${found.size} files mili:",
+            found.map { FileOps.shortPath(it) }
+        )
     }
 }
