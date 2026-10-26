@@ -42,8 +42,33 @@ object AppIndex {
         return entries
     }
 
+    data class Match(val entry: Entry, val score: Float) {
+        /** An exact label, not something that merely looks like it. */
+        val exact: Boolean get() = score >= 0.99f
+    }
+
     /** Best match for a spoken name, or null when nothing is close enough. */
-    fun find(context: Context, spoken: String): Entry? = matches(context, spoken).firstOrNull()
+    fun find(context: Context, spoken: String): Entry? = best(context, spoken)?.entry
+
+    /**
+     * The best match together with how good it is.
+     *
+     * This is the difference the user kept paying for: "WhatsApp Business" and
+     * "WhatsApp" are not the same app, and when only one of them is installed
+     * the assistant should say so instead of quietly opening the other one.
+     */
+    fun best(context: Context, spoken: String): Match? {
+        val needle = normalize(spoken)
+        if (needle.isEmpty()) return null
+
+        val apps = load(context)
+        apps.firstOrNull { it.normalized == needle }?.let { return Match(it, 1f) }
+
+        return apps
+            .map { Match(it, score(needle, it.normalized)) }
+            .filter { it.score > 0.55f }
+            .maxByOrNull { it.score }
+    }
 
     /**
      * Candidates, best first, at most three.

@@ -11,8 +11,8 @@ android {
         applicationId = "com.waz.saathi"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "3.0"
+        versionCode = 9
+        versionName = "3.1"
     }
 
     // Fixed debug key in the repo, so each new APK installs over the previous

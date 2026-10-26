@@ -29,6 +29,20 @@ object CommandParser {
     /** A parse plus how far it should be trusted. 1.0 = certain. */
     data class Guess(val command: Command, val confidence: Float)
 
+    /**
+     * How the last sentence was understood, shown on the panel.
+     *
+     * Three rounds were spent not knowing whether the Gemini key was even
+     * being used. One word on screen settles it every time.
+     */
+    @Volatile
+    var lastSource: String = ""
+        private set
+
+    fun clearSource() {
+        lastSource = ""
+    }
+
     /** Above this the rules answer on their own — no network, no wait. */
     private const val TRUST_RULES = 0.80f
 
@@ -61,12 +75,23 @@ object CommandParser {
 
         // A correction always goes to the model, however confident the rules
         // are: the rules cannot see what they are correcting.
-        if (!correcting && guess.confidence >= TRUST_RULES) return listOf(guess.command)
+        if (!correcting && guess.confidence >= TRUST_RULES) {
+            lastSource = "offline"
+            return listOf(guess.command)
+        }
 
-        if (Settings.geminiKey(context).isNotEmpty()) {
-            val steps = runCatching { gemini(context, text) }.getOrNull().orEmpty()
-                .filter { it.action != Command.Action.UNKNOWN }
-            if (steps.isNotEmpty()) return steps
+        if (Settings.geminiKey(context).isEmpty()) {
+            lastSource = "Gemini key nahi"
+        } else {
+            val steps = runCatching { gemini(context, text) }.getOrNull()
+            when {
+                steps == null -> lastSource = "Gemini fail"
+                steps.none { it.action != Command.Action.UNKNOWN } -> lastSource = "Gemini: pata nahi"
+                else -> {
+                    lastSource = "Gemini"
+                    return steps.filter { it.action != Command.Action.UNKNOWN }
+                }
+            }
         }
 
         if (guess.confidence >= FLOOR) return listOf(guess.command)

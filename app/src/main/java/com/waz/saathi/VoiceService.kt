@@ -69,6 +69,9 @@ class VoiceService : Service() {
     /** A multi-step plan waiting for one yes. */
     private var plan: List<Command> = emptyList()
 
+    /** What was actually heard, without the panel's parser tag stuck on it. */
+    private var lastHeard: String = ""
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -245,6 +248,7 @@ class VoiceService : Service() {
 
     private fun beginListening() {
         Speaker.stop()
+        CommandParser.clearSource()
         pending = null
         choices = emptyList()
         plan = emptyList()
@@ -335,18 +339,39 @@ class VoiceService : Service() {
 
     private fun onParsed(spoken: String, command: Command) {
 
-        // Two apps whose names overlap — WhatsApp and WhatsApp Business — are
-        // one slip of recognition apart. Asking costs one tap; guessing cost
-        // the user the whole command.
-        if (command.action == Command.Action.OPEN_APP &&
-            command.hint.isNotEmpty() &&
-            AppIndex.ambiguous(this, command.hint)
-        ) {
-            val apps = AppIndex.matches(this, command.hint)
-            if (apps.size > 1) {
+        // The app the user named is only opened when its label matches exactly.
+        // Anything short of that is offered, never assumed: asking for
+        // "WhatsApp Business" and silently getting WhatsApp is the single thing
+        // that wasted the most of the user's evening, and it happened because
+        // a near match was treated as a match.
+        if (command.action == Command.Action.OPEN_APP && command.hint.isNotEmpty()) {
+            val match = AppIndex.best(this, command.hint)
+            val near = AppIndex.matches(this, command.hint)
+
+            if (match == null) {
+                val msg = "\"${command.hint}\" naam ki koi app nahi mili."
+                updatePanel(msg, spoken, installedHint(command.hint))
+                Speaker.say(this, msg)
+                Conversation.add(spoken, msg)
+                return
+            }
+
+            if (!match.exact) {
+                showChoices(
+                    "\"${command.hint}\" exactly nahi mili. Inme se koi?",
+                    spoken,
+                    near.map { app ->
+                        app.label to Command(Command.Action.OPEN_APP, target = app.label)
+                    }
+                )
+                Speaker.say(this, "${command.hint} nahi mili. Kaunsi kholun?")
+                return
+            }
+
+            if (near.size > 1) {
                 showChoices(
                     "Kaunsi app?", spoken,
-                    apps.map { app ->
+                    near.map { app ->
                         app.label to Command(Command.Action.OPEN_APP, target = app.label)
                     }
                 )
@@ -418,6 +443,23 @@ class VoiceService : Service() {
                 Speaker.say(this, "${best.name} $verb")
             }
         }.start()
+    }
+
+    /**
+     * What IS installed under a similar name. Without this the user had no way
+     * to tell "the app is not on this phone" from "the assistant is being
+     * stupid", and spent several rounds assuming the second.
+     */
+    private fun installedHint(spokenName: String): List<String> {
+        val all = AppIndex.load(this)
+        val key = spokenName.split(" ").firstOrNull().orEmpty()
+
+        val related =
+            if (key.length < 3) emptyList()
+            else all.filter { it.label.contains(key, ignoreCase = true) }
+
+        return if (related.isEmpty()) listOf("Is phone par ${all.size} apps hain.")
+        else listOf("Is naam se jo installed hai:") + related.map { "• ${it.label}" }
     }
 
     private fun showChoices(
@@ -523,7 +565,7 @@ class VoiceService : Service() {
         }
 
         view.findViewById<View>(R.id.panelYes).setOnClickListener {
-            val heard = currentHeard(view)
+            val heard = lastHeard
             val steps = plan
             if (steps.isNotEmpty()) runPlan(steps, heard)
             else pending?.let { execute(it, heard) }
@@ -554,13 +596,18 @@ class VoiceService : Service() {
         heard: String,
         details: List<String> = emptyList()
     ) {
+        if (heard.isNotBlank()) lastHeard = heard
+
         val view = panel ?: run { showPanel(status, heard); return }
 
         view.findViewById<TextView>(R.id.panelStatus).text = status
 
         view.findViewById<TextView>(R.id.panelHeard).apply {
             visibility = if (heard.isBlank()) View.GONE else View.VISIBLE
-            text = heard
+            // The parser's name rides along with what was heard, so it is
+            // always obvious whether the model was consulted at all.
+            val tag = CommandParser.lastSource
+            text = if (tag.isEmpty()) heard else "$heard   ·   $tag"
         }
 
         view.findViewById<TextView>(R.id.panelDetails).apply {
@@ -568,7 +615,7 @@ class VoiceService : Service() {
             text = details.joinToString("\n")
         }
 
-        renderChoices(view, heard)
+        renderChoices(view, lastHeard)
 
         val asking = pending != null || plan.isNotEmpty()
         val busy = asking || choices.isNotEmpty()
