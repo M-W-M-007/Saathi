@@ -1,0 +1,14 @@
+.gradle/
+build/
+/app/build/
+local.properties
+*.iml
+.idea/
+*.jks
+*.keystore
+# debug key jaanbujh kar commit hoti hai, taaki update purani app ke upar install ho
+!app/debug.keystore
+*.apk
+*.aab
+.DS_Store
+Thumbs.db

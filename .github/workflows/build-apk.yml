@@ -1,0 +1,46 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # ubuntu-latest ko pin kiya hua hai jaanbujh kar: 19 Oct 2026 se woh label
+    # Ubuntu 26 par shift ho raha hai, aur usi par pehli build tooti thi.
+    # Pin hone se build kal bhi waisi hi chalegi jaisi aaj chali.
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Code checkout
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # android-actions/setup-android jaanbujh kar hataya gaya hai.
+      # GitHub runners mein Android SDK pehle se hota hai aur ANDROID_SDK_ROOT
+      # set hota hai, toh woh action zaroori nahi tha — aur wahi fail ho raha tha.
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        run: |
+          echo "SDK: $ANDROID_SDK_ROOT"
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          gradle assembleDebug --no-daemon --stacktrace
+
+      - name: APK upload karein
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
