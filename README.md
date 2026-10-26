@@ -12,8 +12,8 @@ Ya Android Studio: File → Open → yeh folder → Build APK.
 | Boliye | Hota kya hai |
 |---|---|
 | "WhatsApp kholo" | koi bhi installed app khulti hai |
-| "Ramesh ko call karo" | contact se number nikal kar call |
-| "Mummy ko SMS bhejo ki ghar aa raha hoon" | SMS |
+| "Ramesh ko call karo" | dialer khulta hai, number laga hua |
+| "Mummy ko SMS bhejo ki ghar aa raha hoon" | SMS app khulta hai, message likha hua |
 | "Ramesh ko WhatsApp bhejo ki kal milte hain" | chat khulta hai, message likha hua |
 | "Downloads mein Bills folder banao" | folder banta hai |
 | "resume wali file Documents mein move karo" | file move |
@@ -43,11 +43,18 @@ ke naam. Contacts, phone numbers, file ke naam ya file ka content kabhi nahi.
 |---|---|---|
 | Mic | sunne ke liye | kuch nahi chalega |
 | Contacts | naam se number nikalne | sirf number bol kar call |
-| Phone | call lagana | dialer khulega, aap button dabayenge |
-| SMS | message bhejna | SMS app khulega, aap send dabayenge |
 | Display over apps | bubble | sirf app ke andar se chalega |
 | All files access | file ka kaam | folder/move/copy kuch nahi |
 | **Accessibility** | kisi bhi app mein likhna, WhatsApp send dabana | baaki sab chalta hai |
+
+### CALL aur SMS ki permission jaanbujh kar nahi li
+
+Pehle li thi, aur **Play Protect ne app install hi nahi hone di.** Wajah: SMS
+bhejna + call lagana + Accessibility + saari files — yeh theek wahi set hai jo
+banking malware maangta hai, isliye scanner sideloaded app ko rok deta hai.
+
+Ab call karne par dialer number ke saath khulta hai aur SMS app message ke saath —
+ek tap aap dabate ho. Feature wahi rehta hai, aur app install ho jaati hai.
 
 **Accessibility ke baare mein saaf baat:** yeh screen reader wali permission hai —
 isse app screen ka content padh sakti hai. Maine ise sirf do kaam ke liye use

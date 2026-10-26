@@ -7,18 +7,17 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Calls and messages -->
-    <uses-permission android:name="android.permission.CALL_PHONE" />
-    <uses-permission android:name="android.permission.SEND_SMS" />
+    <!-- Contacts only. CALL_PHONE and SEND_SMS are deliberately NOT requested:
+         together with accessibility and all-files access they form exactly the
+         permission set banking malware asks for, and Play Protect blocks a
+         sideloaded app that requests them. Calls and messages instead open the
+         dialler and the SMS app with everything filled in, which costs one tap
+         and keeps the app installable. -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
 
     <!-- Files. MANAGE_EXTERNAL_STORAGE is what allows moving and creating
          folders anywhere in shared storage; without it the app can only touch
          its own directory, which makes a "file manager by voice" pointless. -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
@@ -29,10 +28,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Needed to list and launch other apps on Android 11+ -->
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
-        tools:ignore="QueryAllPackagesPermission" />
-
+    <!-- The <queries> block below is enough to see launchable apps, so the
+         broad QUERY_ALL_PACKAGES permission is not requested. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />

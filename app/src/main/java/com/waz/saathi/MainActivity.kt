@@ -90,9 +90,7 @@ class MainActivity : AppCompatActivity() {
     private fun askCorePermissions() {
         val wanted = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.READ_CONTACTS,
-            Manifest.permission.CALL_PHONE,
-            Manifest.permission.SEND_SMS
+            Manifest.permission.READ_CONTACTS
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             wanted += Manifest.permission.POST_NOTIFICATIONS
@@ -170,8 +168,6 @@ class MainActivity : AppCompatActivity() {
 
         val mic = granted(Manifest.permission.RECORD_AUDIO)
         val contacts = granted(Manifest.permission.READ_CONTACTS)
-        val phone = granted(Manifest.permission.CALL_PHONE)
-        val sms = granted(Manifest.permission.SEND_SMS)
         val overlay = AndroidSettings.canDrawOverlays(this)
         val files = FileOps.hasAllFilesAccess()
         val access = SaathiAccessibilityService.isRunning
@@ -179,8 +175,6 @@ class MainActivity : AppCompatActivity() {
         binding.statusText.text = buildString {
             appendLine(line("Mic (sunna)", mic))
             appendLine(line("Contacts (naam se call)", contacts))
-            appendLine(line("Phone (call lagana)", phone))
-            appendLine(line("SMS", sms))
             appendLine(line("Bubble (display over apps)", overlay))
             appendLine(line("All files access (file ka kaam)", files))
             append(line("Accessibility (kisi bhi app mein likhna)", access))

@@ -1,13 +1,9 @@
 package com.waz.saathi
 
-import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings as AndroidSettings
-import android.telephony.SmsManager
-import androidx.core.content.ContextCompat
 import java.io.File
 
 /**
@@ -72,24 +68,15 @@ object ActionRunner {
         val contact = ContactIndex.resolve(context, who)
             ?: return Outcome(false, "\"$who\" contacts mein nahi mila.")
 
-        val granted = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.CALL_PHONE
-        ) == PackageManager.PERMISSION_GRANTED
-
-        // Without CALL_PHONE the dialler is opened with the number filled in —
-        // one tap for the user, instead of a dead end.
-        val action = if (granted) Intent.ACTION_CALL else Intent.ACTION_DIAL
-
+        // The dialler is opened with the number already in it. Placing the call
+        // directly would need CALL_PHONE, which this app deliberately does not
+        // request — see the manifest for why.
         context.startActivity(
-            Intent(action, Uri.parse("tel:${contact.number}"))
+            Intent(Intent.ACTION_DIAL, Uri.parse("tel:${contact.number}"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
 
-        return Outcome(
-            true,
-            if (granted) "${contact.name} ko call ja raha hai."
-            else "${contact.name} ka number dial par hai — call button dabayein."
-        )
+        return Outcome(true, "${contact.name} ka number dial par hai — call button dabayein.")
     }
 
     private fun sendSms(context: Context, who: String, body: String): Outcome {
@@ -99,28 +86,14 @@ object ActionRunner {
         val contact = ContactIndex.resolve(context, who)
             ?: return Outcome(false, "\"$who\" contacts mein nahi mila.")
 
-        val granted = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.SEND_SMS
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (!granted) {
-            context.startActivity(
-                Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${contact.number}"))
-                    .putExtra("sms_body", body)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
-            return Outcome(true, "SMS app mein message tayyar hai — send dabayein.")
-        }
-
-        return runCatching {
-            @Suppress("DEPRECATION")
-            val sms = SmsManager.getDefault()
-            val parts = sms.divideMessage(body)
-            sms.sendMultipartTextMessage(contact.number, null, parts, null, null)
-            Outcome(true, "${contact.name} ko SMS bhej diya.")
-        }.getOrElse {
-            Outcome(false, "SMS nahi gaya: ${it.localizedMessage}")
-        }
+        // Handed to the messaging app with the text already written. Sending it
+        // silently would need SEND_SMS, which this app does not request.
+        context.startActivity(
+            Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${contact.number}"))
+                .putExtra("sms_body", body)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+        return Outcome(true, "${contact.name} ke liye SMS tayyar hai — send dabayein.")
     }
 
     /**
