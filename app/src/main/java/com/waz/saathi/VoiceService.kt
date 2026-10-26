@@ -264,10 +264,32 @@ class VoiceService : Service() {
     private fun handleHeard(spoken: String) {
         updatePanel("Samajh raha hoon…", spoken)
 
+        // A watchdog, because a silent stall here is what the user actually
+        // sees: the panel sat on "Samajh raha hoon…" with no way forward.
+        // Whatever happens on the worker thread, the panel moves on.
+        val settled = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        val timeout = Runnable {
+            if (settled.compareAndSet(false, true)) {
+                updatePanel(
+                    "Samajhne mein bahut der lag gayi. Dobara boliye, ya chhota command dein.",
+                    spoken
+                )
+            }
+        }
+        main.postDelayed(timeout, 12_000)
+
         // Parsing may call the network, so it never runs on the main thread.
         Thread {
-            val command = CommandParser.parse(this, spoken)
-            main.post { onParsed(spoken, command) }
+            val command = runCatching { CommandParser.parse(this, spoken) }
+                .getOrElse { Command(Command.Action.UNKNOWN, text = spoken) }
+
+            main.post {
+                if (settled.compareAndSet(false, true)) {
+                    main.removeCallbacks(timeout)
+                    onParsed(spoken, command)
+                }
+            }
         }.start()
     }
 

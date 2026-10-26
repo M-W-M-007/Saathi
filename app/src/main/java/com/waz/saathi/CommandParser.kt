@@ -26,15 +26,32 @@ import java.util.Locale
  */
 object CommandParser {
 
+    /**
+     * Never throws. An exception escaping this used to kill the background
+     * thread that called it, leaving the panel stuck on "Samajh raha hoon…"
+     * forever with nothing to show the user — so every path here is guarded
+     * and a failure degrades to the rule parser, then to UNKNOWN.
+     */
     fun parse(context: Context, spoken: String): Command {
         val text = spoken.trim()
         if (text.isEmpty()) return Command(Command.Action.UNKNOWN)
 
+        // Rules run FIRST, and when they understand the command that is the
+        // answer — no network, no wait. "WhatsApp kholo" does not need a model
+        // to interpret it, and going online for it made every simple command
+        // feel sluggish. Gemini is for the sentences rules cannot handle.
+        val quick = runCatching { parseWithRules(context, text) }
+            .getOrElse { Command(Command.Action.UNKNOWN, text = text) }
+
+        if (quick.action != Command.Action.UNKNOWN) return quick
+
         if (Settings.geminiKey(context).isNotEmpty()) {
-            runCatching { parseWithGemini(context, text) }.getOrNull()?.let { return it }
+            runCatching { parseWithGemini(context, text) }.getOrNull()
+                ?.takeIf { it.action != Command.Action.UNKNOWN }
+                ?.let { return it }
         }
 
-        return parseWithRules(context, text)
+        return quick
     }
 
     // ------------------------------------------------------------- gemini
@@ -92,8 +109,10 @@ object CommandParser {
 
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            connectTimeout = 10000
-            readTimeout = 15000
+            // Kept short on purpose: a voice assistant that pauses for 25
+            // seconds is indistinguishable from one that has crashed.
+            connectTimeout = 6000
+            readTimeout = 9000
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
         }
@@ -135,16 +154,35 @@ object CommandParser {
 
     // -------------------------------------------------------------- rules
 
-    private val openWords = listOf("kholo", "kholna", "khol", "open", "chalu karo", "start")
-    private val callWords = listOf("call", "phone karo", "milao", "lagao", "dial")
+    // Recognition returns polite and inflected forms far more often than the
+    // dictionary form: "kholie", "khol dijiye", "kar dijiye".
+    private val openWords = listOf(
+        "kholiye", "kholie", "khol dijiye", "khol do", "kholo", "kholna", "khol",
+        "open karo", "open kar", "open", "chalu karo", "chalu kar", "start karo", "start"
+    )
+    private val callWords = listOf(
+        "call kijiye", "call karo", "call kar", "call",
+        "phone kijiye", "phone karo", "milao", "milaiye", "lagao", "lagaiye", "dial"
+    )
     private val whatsappWords = listOf("whatsapp", "whats app", "watsapp")
-    private val smsWords = listOf("sms", "message bhejo", "text bhejo", "massage")
-    private val folderWords = listOf("folder banao", "folder bana", "new folder", "folder create")
+    private val smsWords = listOf(
+        "sms bhejiye", "sms bhejo", "sms karo", "sms",
+        "message bhejo", "message bhejiye", "text bhejo", "massage"
+    )
+    private val folderWords = listOf(
+        "folder banaiye", "folder banao", "folder bana", "new folder", "folder create",
+        "naya folder"
+    )
     private val moveWords = listOf("move karo", "move kar", "shift karo", "hatao yahan", "daal do")
     private val copyWords = listOf("copy karo", "copy kar", "nakal")
     private val deleteWords = listOf("delete karo", "hata do", "mita do", "remove karo")
-    private val listWords = listOf("files dikhao", "kya hai", "list karo", "dikhao")
-    private val typeWords = listOf("likho", "likh do", "type karo", "write")
+    private val listWords = listOf(
+        "files dikhao", "files dikhaiye", "kya hai", "kya rakha hai",
+        "list karo", "dikhaiye", "dikhao"
+    )
+    private val typeWords = listOf(
+        "likh dijiye", "likh do", "likho", "likhiye", "type karo", "type kar", "write"
+    )
 
     private fun parseWithRules(context: Context, spoken: String): Command {
         val lower = spoken.lowercase(Locale.ROOT)
@@ -243,11 +281,15 @@ object CommandParser {
     }
 
     private fun betweenAny(text: String, start: List<String>, end: List<String>): String {
-        val from = start.firstNotNullOfOrNull { m ->
+        val from = (start.firstNotNullOfOrNull { m ->
             text.indexOf(m).takeIf { it >= 0 }?.plus(m.length)
-        } ?: 0
+        } ?: 0).coerceIn(0, text.length)
+
         val rest = text.substring(from)
-        val to = end.firstNotNullOfOrNull { m -> rest.indexOf(m).takeIf { it > 0 } } ?: rest.length
+
+        val to = (end.firstNotNullOfOrNull { m -> rest.indexOf(m).takeIf { it > 0 } }
+            ?: rest.length).coerceIn(0, rest.length)
+
         return rest.substring(0, to).trim()
     }
 
