@@ -38,6 +38,7 @@ class VoiceService : Service() {
         const val ACTION_START = "com.waz.saathi.START"
         const val ACTION_STOP = "com.waz.saathi.STOP"
         const val ACTION_LISTEN = "com.waz.saathi.LISTEN"
+        const val ACTION_TOGGLE_BUBBLE = "com.waz.saathi.TOGGLE_BUBBLE"
 
         private const val CHANNEL_ID = "saathi_voice"
         private const val NOTIF_ID = 7701
@@ -83,16 +84,23 @@ class VoiceService : Service() {
                 return START_NOT_STICKY
             }
 
+            ACTION_TOGGLE_BUBBLE -> {
+                val now = !Settings.showBubble(this)
+                Settings.setShowBubble(this, now)
+                if (now) showBubble() else hideBubble()
+                startAsForeground()      // refresh the notification's label
+            }
+
             ACTION_LISTEN -> {
                 startAsForeground()
-                showBubble()
+                applyBubbleSetting()
                 isRunning = true
                 beginListening()
             }
 
             else -> {
                 startAsForeground()
-                showBubble()
+                applyBubbleSetting()
                 isRunning = true
             }
         }
@@ -120,11 +128,23 @@ class VoiceService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val toggleBubble = PendingIntent.getService(
+            this, 3,
+            Intent(this, VoiceService::class.java).setAction(ACTION_TOGGLE_BUBBLE),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val bubbleLabel = if (Settings.showBubble(this)) "Bubble chhupao" else "Bubble dikhao"
+
         val notif: Notification = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Saathi tayyar hai")
-            .setContentText("Bubble dabakar boliye")
+            .setContentText(
+                if (Settings.showBubble(this)) "Bubble dabakar boliye"
+                else "Yahan \"Suno\" dabakar boliye"
+            )
             .setSmallIcon(R.drawable.ic_mic)
             .addAction(Notification.Action.Builder(null, "Suno", listen).build())
+            .addAction(Notification.Action.Builder(null, bubbleLabel, toggleBubble).build())
             .addAction(Notification.Action.Builder(null, "Band karo", stop).build())
             .setOngoing(true)
             .build()
@@ -179,7 +199,19 @@ class VoiceService : Service() {
                 }
 
                 MotionEvent.ACTION_UP -> {
-                    if (!moved) beginListening()
+                    val heldLong = event.eventTime - event.downTime > 600
+                    when {
+                        moved -> Unit                    // was a drag
+                        heldLong -> {
+                            // Long press hides it. The assistant keeps running;
+                            // the notification and the tile still start it.
+                            Settings.setShowBubble(this@VoiceService, false)
+                            hideBubble()
+                            startAsForeground()
+                            toast("Bubble chhup gaya. Notification ya Quick Settings tile se chalu kar sakte hain.")
+                        }
+                        else -> beginListening()
+                    }
                     true
                 }
 
@@ -189,6 +221,15 @@ class VoiceService : Service() {
 
         windowManager.addView(view, params)
         bubble = view
+    }
+
+    private fun applyBubbleSetting() {
+        if (Settings.showBubble(this)) showBubble() else hideBubble()
+    }
+
+    private fun hideBubble() {
+        bubble?.let { runCatching { windowManager.removeView(it) } }
+        bubble = null
     }
 
     // ------------------------------------------------------------ listening

@@ -66,6 +66,33 @@ class MainActivity : AppCompatActivity() {
             refresh()
         }
 
+        binding.langGroup.setOnCheckedChangeListener { _, id ->
+            Settings.setSpeechLanguage(
+                this,
+                when (id) {
+                    R.id.langHindi -> "hi-IN"
+                    R.id.langEnglish -> "en-IN"
+                    else -> ""      // phone default
+                }
+            )
+        }
+
+        binding.bubbleSwitch.setOnCheckedChangeListener { _, checked ->
+            // refresh() sets this programmatically too, so ignore no-op changes.
+            if (checked == Settings.showBubble(this)) return@setOnCheckedChangeListener
+
+            if (VoiceService.isRunning) {
+                // The service flips the setting AND adds or removes the view.
+                // Writing the setting here as well would flip it twice.
+                startService(
+                    Intent(this, VoiceService::class.java)
+                        .setAction(VoiceService.ACTION_TOGGLE_BUBBLE)
+                )
+            } else {
+                Settings.setShowBubble(this, checked)
+            }
+        }
+
         binding.confirmSwitch.setOnCheckedChangeListener { _, checked ->
             Settings.setConfirmActions(this, checked)
         }
@@ -163,6 +190,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun refresh() {
         binding.geminiKeyInput.setText(Settings.geminiKey(this))
+        binding.langGroup.check(
+            when (Settings.speechLanguage(this)) {
+                "hi-IN" -> R.id.langHindi
+                "en-IN" -> R.id.langEnglish
+                else -> R.id.langDefault
+            }
+        )
+        binding.bubbleSwitch.isChecked = Settings.showBubble(this)
         binding.confirmSwitch.isChecked = Settings.confirmActions(this)
         binding.speakSwitch.isChecked = Settings.speakBack(this)
 
