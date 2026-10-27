@@ -57,11 +57,22 @@ object AppIndex {
      * "WhatsApp" are not the same app, and when only one of them is installed
      * the assistant should say so instead of quietly opening the other one.
      */
+    /** WhatsApp Business, by package — never by label. Labels are what failed. */
+    fun businessEntry(context: Context): Entry? =
+        load(context).firstOrNull { it.packageName == "com.whatsapp.w4b" }
+
     fun best(context: Context, spoken: String): Match? {
         val needle = normalize(spoken)
         if (needle.isEmpty()) return null
 
         val apps = load(context)
+        // v3.4: "business" bolne par label mat dhoondho. Phone par Business
+        // ka label exact "WhatsApp Business" nahi mila tha, isliye panel
+        // sirf personal WhatsApp offer karta tha. Package w4b hi Business
+        // hai, chahe uska label kuch bhi likha ho.
+        if (needle.contains("business")) {
+            businessEntry(context)?.let { return Match(it, 1f) }
+        }
         apps.firstOrNull { it.normalized == needle }?.let { return Match(it, 1f) }
 
         return apps
@@ -84,6 +95,11 @@ object AppIndex {
         if (needle.isEmpty()) return emptyList()
 
         val apps = load(context)
+
+        // v3.4: Business ke liye package pin, label pin nahi (best() dekhein).
+        if (needle.contains("business")) {
+            businessEntry(context)?.let { return listOf(it) }
+        }
 
         apps.firstOrNull { it.normalized == needle }?.let { return listOf(it) }
 

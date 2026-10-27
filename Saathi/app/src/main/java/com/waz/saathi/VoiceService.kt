@@ -284,6 +284,10 @@ class VoiceService : Service() {
         // Whatever happens on the worker thread, the panel moves on.
         val settled = java.util.concurrent.atomic.AtomicBoolean(false)
 
+        // v3.4: 22 second bahut kam tha — Gemini ke 429/503 retry aur
+        // chaar model try karne mein usse zyada lag jata tha, aur user
+        // ko lagta tha app ruk gaya hai. 45 second ka timeout, aur
+        // 15 second par ek progress line, taaki beech mein khamoshi na ho.
         val timeout = Runnable {
             if (settled.compareAndSet(false, true)) {
                 updatePanel(
@@ -292,7 +296,13 @@ class VoiceService : Service() {
                 )
             }
         }
-        main.postDelayed(timeout, 22_000)
+        val progress = Runnable {
+            if (!settled.get()) {
+                updatePanel("Gemini se pooch raha hoon, thoda rukiye…", spoken)
+            }
+        }
+        main.postDelayed(progress, 15_000)
+        main.postDelayed(timeout, 45_000)
 
         // Parsing may call the network, so it never runs on the main thread.
         Thread {
@@ -302,6 +312,7 @@ class VoiceService : Service() {
             main.post {
                 if (settled.compareAndSet(false, true)) {
                     main.removeCallbacks(timeout)
+                    main.removeCallbacks(progress)
                     onPlanned(spoken, steps)
                 }
             }
@@ -351,7 +362,13 @@ class VoiceService : Service() {
         // "WhatsApp Business" and silently getting WhatsApp is the single thing
         // that wasted the most of the user's evening, and it happened because
         // a near match was treated as a match.
-        if (command.action == Command.Action.OPEN_APP && command.hint.isNotEmpty()) {
+        // v3.4: Business ke liye choices mat poochho — package pin hai
+        // (AppIndex.businessEntry), label chahe kuch bhi ho. Yeh block
+        // tabhi chalega jab Business install hi nahi hai.
+        if (command.action == Command.Action.OPEN_APP && command.hint.isNotEmpty() &&
+            !(command.hint.contains("business", ignoreCase = true) &&
+                AppIndex.businessEntry(this) != null)
+        ) {
             val match = AppIndex.best(this, command.hint)
             val near = AppIndex.matches(this, command.hint)
 
@@ -418,8 +435,14 @@ class VoiceService : Service() {
             main.post {
                 if (found.isEmpty()) {
                     val msg = "\"${command.target}\" contacts mein nahi mila."
-                    updatePanel(msg, spoken)
-                    Speaker.say(this, msg)
+                    // v3.4: mic "sis" ko "syster" sun leta hai, toh poora
+                    // naam bolne par match toot jata hai. Pehla naam hi
+                    // kaafi hai — yeh hint panel par bhi dikhega.
+                    updatePanel(
+                        msg, spoken,
+                        listOf("Sirf pehla naam bolkar dobara try karein, jaise \"Shaheen ko call karo\".")
+                    )
+                    Speaker.say(this, "$msg Sirf pehla naam bolkar dobara try karein.")
                     return@post
                 }
 
@@ -502,17 +525,22 @@ class VoiceService : Service() {
                 // taaki neeche wala button dikhe aur dab sake. Agar
                 // user usse pehle dobara bolna shuru kar de toh naya
                 // panel nahi hatega (panel instance check).
+                // v3.4: 4 second ki jagah 2.5 second — panel jitni jaldi
+                // hate, utni jaldi neeche wala button dikhega aur dabega.
+                // OPEN_FOLDER bhi doosri app (Files) kholta hai, isliye
+                // woh bhi isi list mein hai.
                 if (command.action in setOf(
                         Command.Action.OPEN_APP,
                         Command.Action.CALL,
                         Command.Action.SEND_SMS,
-                        Command.Action.WHATSAPP
+                        Command.Action.WHATSAPP,
+                        Command.Action.OPEN_FOLDER
                     )
                 ) {
                     val shownPanel = panel
                     main.postDelayed({
                         if (panel != null && panel === shownPanel) removePanelQuietly()
-                    }, 4000)
+                    }, 2500)
                 }
             }
         }.start()
@@ -571,9 +599,11 @@ class VoiceService : Service() {
 
         // Fixed height: a long file listing must never grow the panel until the
         // buttons are pushed off-screen and nothing can be dismissed.
+        // v3.4: 45% bahut bada tha — peeche ki app dikhti hi nahi thi.
+        // 32% par panel chhota hai, list abhi bhi scroll hoti hai.
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
-            (screenH * 0.45f).toInt(),
+            (screenH * 0.32f).toInt(),
             overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,

@@ -33,6 +33,7 @@ object ActionRunner {
         Command.Action.COPY_FILE -> moveOrCopy(command, move = false)
         Command.Action.DELETE_FILE -> deleteFile(command.from)
         Command.Action.LIST_FILES -> listFiles(command.from)
+        Command.Action.OPEN_FOLDER -> openFolder(context, command.from, command.to)
         Command.Action.SEARCH_FILE -> searchFile(command.target)
         Command.Action.OPEN_SETTINGS -> openSettings(context)
         Command.Action.UNKNOWN -> Outcome(false, "Yeh samajh nahi aaya.")
@@ -40,9 +41,63 @@ object ActionRunner {
 
     // ---------------------------------------------------------------- apps
 
+    // v3.4: folder kholna. Android kisi bhi folder ko seedha Files app
+    // mein ek hi intent se nahi kholta, isliye do kaam ek saath: Files
+    // app kholo (jo bhi file manager installed ho) aur folder ki list
+    // panel par dikhao. List hi woh saboot hai ki sahi folder khula hai.
+    private fun openFolder(context: Context, parent: String, name: String): Outcome {
+        requireStorage()?.let { return it }
+
+        // "download folder open karo" mein to = download hai, matlab
+        // Download folder khud. "download mein test folder" mein
+        // parent = download, to = test, matlab Download ke andar test.
+        val folder = when {
+            name.isBlank() -> null
+            parent.isBlank() -> FileOps.resolveFolder(name)
+            else -> {
+                val base = FileOps.resolveFolder(parent)
+                if (base != null) {
+                    val child = File(base, name)
+                    if (child.isDirectory) child else FileOps.resolveFolder(name)
+                } else {
+                    FileOps.resolveFolder(name)
+                }
+            }
+        } ?: return Outcome(false, "\"$name\" folder nahi mila.")
+
+        val items = FileOps.list(folder)
+        val details = items.map { if (it.isDirectory) "📁 ${it.name}" else "📄 ${it.name}" }
+
+        // Pehla installed file manager kholo; na mile toh bhi list kaam
+        // aayegi, isliye woh failure nahi hai.
+        val managers = listOf(
+            "com.google.android.documentsui",
+            "com.android.documentsui",
+            "com.oneplus.filemanager",
+            "com.samsung.android.myfiles.MyFiles",
+            "com.mi.android.globalFileexplorer"
+        )
+        for (pkg in managers) {
+            val intent = AppIndex.launchIntent(context, pkg)
+            if (intent != null) {
+                runCatching { context.startActivity(intent) }
+                break
+            }
+        }
+
+        return Outcome(
+            true,
+            "${FileOps.shortPath(folder)} khul gaya — usme ${items.size} cheezein hain.",
+            details
+        )
+    }
+
     private fun openApp(context: Context, name: String): Outcome {
         if (name.isBlank()) return Outcome(false, "Kaunsi app kholni hai?")
 
+        // v3.4: Business ke liye AppIndex.find() package pin karta hai
+        // (label par bharosa nahi), isliye "WhatsApp Business" yahan
+        // bhi w4b hi kholega.
         val entry = AppIndex.find(context, name)
             ?: return Outcome(false, "\"$name\" naam ki koi app nahi mili.")
 
