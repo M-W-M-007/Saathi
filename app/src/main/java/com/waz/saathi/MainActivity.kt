@@ -66,6 +66,20 @@ class MainActivity : AppCompatActivity() {
             refresh()
         }
 
+        binding.testKeyButton.setOnClickListener {
+            Settings.setGeminiKey(this, binding.geminiKeyInput.text.toString())
+            binding.keyTestResult.visibility = View.VISIBLE
+            binding.keyTestResult.text = "Test chal raha hai…"
+
+            // The network cannot be touched on the main thread, and the answer
+            // is only useful on screen, so it comes back to the view by post.
+            Thread {
+                val result = runCatching { CommandParser.testKey(this) }
+                    .getOrElse { "Test fail: ${it.localizedMessage}" }
+                binding.keyTestResult.post { binding.keyTestResult.text = result }
+            }.start()
+        }
+
         binding.langGroup.setOnCheckedChangeListener { _, id ->
             Settings.setSpeechLanguage(
                 this,

@@ -39,9 +39,29 @@ object CommandParser {
     var lastSource: String = ""
         private set
 
+    /** The full text of the last Gemini failure, for the panel and the test button. */
+    @Volatile
+    var lastError: String = ""
+        private set
+
     fun clearSource() {
         lastSource = ""
     }
+
+    /**
+     * Model names are not forever. "gemini-flash-latest" returning 404 looks
+     * exactly like a bad key from inside the app, so the alternatives are tried
+     * in order and the one that answers is remembered for the session.
+     */
+    private val MODELS = listOf(
+        "gemini-flash-latest",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash"
+    )
+
+    @Volatile
+    private var workingModel: String? = null
 
     /** Above this the rules answer on their own — no network, no wait. */
     private const val TRUST_RULES = 0.80f
@@ -85,7 +105,8 @@ object CommandParser {
         } else {
             val steps = runCatching { gemini(context, text) }.getOrNull()
             when {
-                steps == null -> lastSource = "Gemini fail"
+                steps == null -> lastSource = "Gemini fail" +
+                    lastError.takeIf { it.isNotEmpty() }?.let { " ($it)" }.orEmpty()
                 steps.none { it.action != Command.Action.UNKNOWN } -> lastSource = "Gemini: pata nahi"
                 else -> {
                     lastSource = "Gemini"
@@ -467,26 +488,9 @@ object CommandParser {
             })
         }.toString()
 
-        val url = URL(
-            "https://generativelanguage.googleapis.com/v1beta/models/" +
-                "gemini-flash-latest:generateContent?key=$key"
-        )
-
-        val conn = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 6000
-            readTimeout = 10000
-            doOutput = true
-            setRequestProperty("Content-Type", "application/json")
-        }
+        val response = call(key, body) ?: return null
 
         return try {
-            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            if (conn.responseCode != 200) return null
-
-            val response = BufferedReader(InputStreamReader(conn.inputStream, "UTF-8"))
-                .use { it.readText() }
-
             val raw = JSONObject(response)
                 .getJSONArray("candidates").getJSONObject(0)
                 .getJSONObject("content").getJSONArray("parts").getJSONObject(0)
@@ -506,10 +510,101 @@ object CommandParser {
                 }
             }
         } catch (e: Exception) {
+            lastError = "jawab padha nahi gaya"
             null
-        } finally {
-            conn.disconnect()
         }
+    }
+
+    /**
+     * One POST, trying each model name until one answers.
+     *
+     * Every failure used to come back as a bare null, so a wrong key, a dead
+     * model name and a slow network were indistinguishable — and the user spent
+     * an evening assuming the first. The reason is now kept in [lastError].
+     */
+    private fun call(key: String, body: String): String? {
+        lastError = ""
+
+        val order = workingModel?.let { listOf(it) + MODELS.filter { m -> m != it } } ?: MODELS
+        var problem = ""
+
+        for (model in order) {
+            val url = URL(
+                "https://generativelanguage.googleapis.com/v1beta/models/" +
+                    "$model:generateContent?key=$key"
+            )
+
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 8000
+                readTimeout = 15000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+
+            try {
+                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+
+                val code = conn.responseCode
+                if (code == 200) {
+                    workingModel = model
+                    return BufferedReader(InputStreamReader(conn.inputStream, "UTF-8"))
+                        .use { it.readText() }
+                }
+
+                val detail = runCatching {
+                    BufferedReader(InputStreamReader(conn.errorStream, "UTF-8"))
+                        .use { it.readText() }
+                }.getOrNull().orEmpty()
+
+                val message = runCatching {
+                    JSONObject(detail).getJSONObject("error").getString("message")
+                }.getOrNull() ?: detail.take(80)
+
+                problem = "$code: ${message.take(90)}"
+
+                // A bad key, a blocked key or a quota limit will not be fixed
+                // by asking a different model, so stop rather than hammer.
+                if (code == 400 || code == 401 || code == 403 || code == 429) break
+            } catch (e: Exception) {
+                problem = e.javaClass.simpleName.removeSuffix("Exception")
+                    .ifEmpty { "network" }
+                break
+            } finally {
+                conn.disconnect()
+            }
+        }
+
+        lastError = problem.ifEmpty { "koi jawab nahi" }
+        return null
+    }
+
+    /** Used by the app's "Gemini test" button: one tiny request, plain answer. */
+    fun testKey(context: Context): String {
+        val key = Settings.geminiKey(context)
+        if (key.isEmpty()) return "Key save hi nahi hui hai."
+
+        val body = JSONObject().apply {
+            put(
+                "contents", JSONArray().put(
+                    JSONObject().put(
+                        "parts",
+                        JSONArray().put(JSONObject().put("text", "Reply with the word OK."))
+                    )
+                )
+            )
+        }.toString()
+
+        val answer = call(key, body)
+            ?: return "Kaam nahi kiya — $lastError"
+
+        val text = runCatching {
+            JSONObject(answer).getJSONArray("candidates").getJSONObject(0)
+                .getJSONObject("content").getJSONArray("parts").getJSONObject(0)
+                .getString("text").trim()
+        }.getOrNull().orEmpty()
+
+        return "Chal gaya. Model: ${workingModel ?: "?"}. Jawab: ${text.take(40)}"
     }
 
     private fun toCommand(json: JSONObject): Command? {

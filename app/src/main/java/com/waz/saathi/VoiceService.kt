@@ -292,7 +292,7 @@ class VoiceService : Service() {
                 )
             }
         }
-        main.postDelayed(timeout, 12_000)
+        main.postDelayed(timeout, 22_000)
 
         // Parsing may call the network, so it never runs on the main thread.
         Thread {
@@ -313,7 +313,14 @@ class VoiceService : Service() {
 
         if (real.isEmpty()) {
             val msg = "Yeh samajh nahi aaya."
-            updatePanel(msg, spoken)
+            // When the model could not be reached, the reason belongs on screen
+            // rather than in a log nobody can open from a phone.
+            val why = CommandParser.lastError
+                .takeIf { it.isNotEmpty() }
+                ?.let { listOf("Gemini: $it", "App mein \"Gemini test karo\" dabakar check karein.") }
+                .orEmpty()
+
+            updatePanel(msg, spoken, why)
             Speaker.say(this, msg)
             Conversation.add(spoken, msg)
             return

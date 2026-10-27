@@ -217,6 +217,28 @@
             android:layout_marginTop="6dp"
             android:text="Key save karo" />
 
+        <!--
+          Checks the key without having to speak a command and guess from the
+          result. It reports the exact reason a call fails, which is what was
+          missing while the assistant simply said it had not understood.
+        -->
+        <Button
+            android:id="@+id/testKeyButton"
+            style="?attr/materialButtonOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="Gemini test karo" />
+
+        <TextView
+            android:id="@+id/keyTestResult"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:lineSpacingMultiplier="1.3"
+            android:textIsSelectable="true"
+            android:visibility="gone" />
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
