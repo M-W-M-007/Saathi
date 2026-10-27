@@ -172,7 +172,22 @@ object FileOps {
         value.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
 
     fun createFolder(parentSpoken: String, name: String): Result<File> = runCatching {
-        val parent = resolveFolder(parentSpoken) ?: root
+        // v3.3: pehle resolveFolder() alias folder ke na hone par null
+        // deta tha, toh parent root ban jata tha aur folder Downloads
+        // ki jagah Internal storage ke root mein ban jata tha — user
+        // ko Downloads mein dikhta hi nahi tha. Alias ho toh uska
+        // asli path hi parent hai, chahe woh folder abhi bana na ho;
+        // mkdirs() parent ko bhi bana dega.
+        val aliasKey = parentSpoken.trim().lowercase(Locale.ROOT)
+            .filter { it.isLetterOrDigit() }
+        val parent = when {
+            parentSpoken.isBlank() -> root
+            aliases[aliasKey] != null -> {
+                val rel = aliases.getValue(aliasKey)
+                if (rel.isEmpty()) root else File(root, rel)
+            }
+            else -> resolveFolder(parentSpoken) ?: root
+        }
         val clean = name.trim().trim('/')
         require(clean.isNotEmpty()) { "Folder ka naam nahi mila." }
 

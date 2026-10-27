@@ -53,11 +53,15 @@ object CommandParser {
      * exactly like a bad key from inside the app, so the alternatives are tried
      * in order and the one that answers is remembered for the session.
      */
+    // v3.3: 2026-10-27 ko curl se verified — gemini-3.5-flash-lite OK deta
+    // hai. 2.5/2.0/1.5 naye users ko 404 dete hain ("no longer available"),
+    // isliye list se hata diye. flash-lite-latest abhi 3.5-flash-lite ko
+    // hi point karta hai, isliye woh doosra fallback hai, pehla nahi.
     private val MODELS = listOf(
-        "gemini-flash-latest",
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash"
+        "gemini-3.5-flash-lite",
+        "gemini-flash-lite-latest",
+        "gemini-3.8-flash",
+        "gemini-flash-latest"
     )
 
     @Volatile
@@ -110,7 +114,16 @@ object CommandParser {
                 steps.none { it.action != Command.Action.UNKNOWN } -> lastSource = "Gemini: pata nahi"
                 else -> {
                     lastSource = "Gemini"
+                    // v3.3: Gemini path se aaye WhatsApp command mein bhi
+                    // Business ka pata rakhna hai, warna ActionRunner ko
+                    // nahi pata chalega kaunsi WhatsApp kholni hai.
+                    val business = lower.contains("whatsapp business")
                     return steps.filter { it.action != Command.Action.UNKNOWN }
+                        .map { step ->
+                            if (business && step.action == Command.Action.WHATSAPP) {
+                                step.copy(hint = "whatsapp business")
+                            } else step
+                        }
                 }
             }
         }
@@ -165,6 +178,33 @@ object CommandParser {
     private val MOVE = Regex(
         """^(.+?)\s+(?:ko|wali\s+file)\s+(.+?)\s+(?:mein|me|main|folder\s+mein)\s+""" +
             """(?:move\s*kar(?:o|iye)?|shift\s*kar(?:o|iye)?|daal\s*do|bhej\s*do)$"""
+    )
+
+    // v3.3: naam-pehle wale folder aur "wali file ko" wale move.
+    // "Downloads mein Bills naam ka folder banao" purane FOLDER se nahi
+    // milta tha (naam folder se pehle hai), aur "resume wali file ko
+    // Documents mein move karo" ka destination "ko documents" ban jata
+    // tha. Yeh do pattern app ke apne UI examples ko cover karte hain.
+    private val FOLDER_PARENT_NAME = Regex(
+        """^(.+?)\s+(?:mein|me|main|ke\s+andar)\s+(.+?)\s+(?:naam\s+ka\s+|name\s+)?folder\s+""" +
+            """(?:banao|bana\s*do|banaiye|banana|create\s*kar(?:o|iye)?|create)\s*$"""
+    )
+
+    private val FOLDER_NAME_PARENT = Regex(
+        """^(.+?)\s+(?:naam\s+ka\s+)?folder\s+""" +
+            """(?:banao|bana\s*do|banaiye|banana|create\s*kar(?:o|iye)?|create)\s+""" +
+            """(.+?)\s+(?:mein|me|main|ke\s+andar)\s*$"""
+    )
+
+    private val MOVE2 = Regex(
+        """^(.+?)\s+(?:wali\s+file\s+)?(?:ko\s+)?(.+?)\s+(?:folder\s+)?""" +
+            """(?:mein|me|main)\s+(?:move\s*kar(?:o|iye)?|shift\s*kar(?:o|iye)?|daal\s*do|bhej\s*do)$"""
+    )
+
+    private val WHATSAPP_NO_BODY = Regex(
+        """^(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?(.+?)\s+ko\s+""" +
+            """(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?""" +
+            """(?:likho|likh\s*do|likhiye|bhejo|bhej\s*do|bhejiye|message\s*kar(?:o|iye)?|msg)\s*$"""
     )
 
     private val COPY = Regex(
@@ -246,15 +286,34 @@ object CommandParser {
         }
 
         // Messages first: "X ko whatsapp par likho ..." also contains "bhej".
-        WHATSAPP.find(lower)?.let { m ->
+        // v3.3: "WhatsApp Business" ko pehle "WhatsApp" mein badal dein,
+        // warna who "business par ramesh" ban jata tha. hint mein asli
+        // app ka naam rakhte hain, taaki ActionRunner sahi app khole.
+        val isBusiness = lower.contains("whatsapp business")
+        val waText = if (isBusiness) lower.replace("whatsapp business", "whatsapp") else lower
+        val waHint = if (isBusiness) "whatsapp business" else "whatsapp"
+        WHATSAPP.find(waText)?.let { m ->
             val who = slot(m.groupValues[1])
             val body = m.groupValues[2].trim()
             if (who.isNotEmpty() && body.isNotEmpty()) {
                 // The slots here are pinned by "ko" and the verb, so a long
                 // message body does not make the parse any less certain.
                 return Guess(
-                    Command(Command.Action.WHATSAPP, target = who, text = body),
+                    Command(Command.Action.WHATSAPP, target = who, text = body, hint = waHint),
                     if (nameLooksClean(who)) 0.9f else 0.5f
+                )
+            }
+        }
+
+        // Body ke bina WhatsApp: sirf chat kholna hai, message baad mein
+        // likha jayega. Pehle yeh UNKNOWN ban jata tha aur Gemini par
+        // ja kar fail hota tha.
+        WHATSAPP_NO_BODY.find(waText)?.let { m ->
+            val who = slot(m.groupValues[1])
+            if (who.isNotEmpty()) {
+                return Guess(
+                    Command(Command.Action.WHATSAPP, target = who, text = "", hint = waHint),
+                    if (nameLooksClean(who)) 0.85f else 0.5f
                 )
             }
         }
@@ -277,12 +336,23 @@ object CommandParser {
             }
         }
 
+        MOVE2.find(lower)?.let { m ->
+            return Guess(
+                Command(
+                    Command.Action.MOVE_FILE,
+                    from = cleanFileName(slot(m.groupValues[1])),
+                    to = cleanFileName(slot(m.groupValues[2]))
+                ),
+                minOf(0.85f, cap)
+            )
+        }
+
         MOVE.find(lower)?.let { m ->
             return Guess(
                 Command(
                     Command.Action.MOVE_FILE,
-                    from = slot(m.groupValues[1]),
-                    to = slot(m.groupValues[2])
+                    from = cleanFileName(slot(m.groupValues[1])),
+                    to = cleanFileName(slot(m.groupValues[2]))
                 ),
                 minOf(0.85f, cap)
             )
@@ -299,8 +369,24 @@ object CommandParser {
             )
         }
 
+        FOLDER_PARENT_NAME.find(lower)?.let { m ->
+            val name = cleanFolderName(slot(m.groupValues[2])).ifEmpty { "Naya Folder" }
+            return Guess(
+                Command(Command.Action.CREATE_FOLDER, from = slot(m.groupValues[1]), to = name),
+                minOf(0.85f, cap)
+            )
+        }
+
+        FOLDER_NAME_PARENT.find(lower)?.let { m ->
+            val name = cleanFolderName(slot(m.groupValues[1])).ifEmpty { "Naya Folder" }
+            return Guess(
+                Command(Command.Action.CREATE_FOLDER, from = slot(m.groupValues[2]), to = name),
+                minOf(0.85f, cap)
+            )
+        }
+
         FOLDER.find(lower)?.let { m ->
-            val name = slot(m.groupValues[2]).ifEmpty { "Naya Folder" }
+            val name = cleanFolderName(slot(m.groupValues[2])).ifEmpty { "Naya Folder" }
             return Guess(
                 Command(Command.Action.CREATE_FOLDER, from = slot(m.groupValues[1]), to = name),
                 minOf(0.85f, cap)
@@ -408,8 +494,24 @@ object CommandParser {
 
         while (words.isNotEmpty() && words.last() in TAIL) words.removeAt(words.size - 1)
 
+        // v3.3: shuru ke case markers bhi hatayein. "ko Documents" ka
+        // destination "ko documents" ban jata tha aur folder nahi milta
+        // tha; "par Ramesh" ka contact "par ramesh" ban jata tha.
+        // Naam ke shuru mein ko/par/pe kabhi naam ka hissa nahi hote.
+        while (words.isNotEmpty() && words.first() in TAIL) words.removeAt(0)
+
         return words.joinToString(" ").trim()
     }
+
+
+    /** "Bills naam ka" -> "Bills". Folder naam mein naam/ka shabd nahi. */
+    private fun cleanFolderName(value: String): String =
+        value.split(" ").filter { it !in setOf("naam", "name", "ka") }.joinToString(" ").trim()
+
+    /** "resume wali file" -> "resume", "ko documents" -> "documents". */
+    private fun cleanFileName(value: String): String =
+        value.split(" ").filter { it !in setOf("wali", "file") }.joinToString(" ").trim()
+            .let { slot(it) }
 
     // --------------------------------------------------------------- gemini
 
@@ -521,6 +623,14 @@ object CommandParser {
      * Every failure used to come back as a bare null, so a wrong key, a dead
      * model name and a slow network were indistinguishable — and the user spent
      * an evening assuming the first. The reason is now kept in [lastError].
+     *
+     * v3.3: 429 par rukna band kar diya gaya hai. Pehle 429 aate hi loop
+     * toot jata tha, isliye Lite fallback kabhi try hi nahi hota tha.
+     * Ab 429/503 par wahi model ek baar 3 second ruk kar dobara try hota
+     * hai, phir agla model try hota hai. Sirf 400/401/403 (galat/blocked
+     * key) par rukte hain, kyunki woh doosre model se theek nahi honge.
+     * Yeh function hamesha worker thread se call hota hai, main thread se
+     * kabhi nahi, isliye Thread.sleep yahan safe hai.
      */
     private fun call(key: String, body: String): String? {
         lastError = ""
@@ -529,49 +639,65 @@ object CommandParser {
         var problem = ""
 
         for (model in order) {
-            val url = URL(
-                "https://generativelanguage.googleapis.com/v1beta/models/" +
-                    "$model:generateContent?key=$key"
-            )
+            var attempt = 0
+            while (attempt < 2) {
+                attempt++
+                val url = URL(
+                    "https://generativelanguage.googleapis.com/v1beta/models/" +
+                        "$model:generateContent?key=$key"
+                )
 
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 8000
-                readTimeout = 15000
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-            }
-
-            try {
-                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-
-                val code = conn.responseCode
-                if (code == 200) {
-                    workingModel = model
-                    return BufferedReader(InputStreamReader(conn.inputStream, "UTF-8"))
-                        .use { it.readText() }
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 8000
+                    readTimeout = 15000
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json")
                 }
 
-                val detail = runCatching {
-                    BufferedReader(InputStreamReader(conn.errorStream, "UTF-8"))
-                        .use { it.readText() }
-                }.getOrNull().orEmpty()
+                try {
+                    conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
 
-                val message = runCatching {
-                    JSONObject(detail).getJSONObject("error").getString("message")
-                }.getOrNull() ?: detail.take(80)
+                    val code = conn.responseCode
+                    if (code == 200) {
+                        workingModel = model
+                        return BufferedReader(InputStreamReader(conn.inputStream, "UTF-8"))
+                            .use { it.readText() }
+                    }
 
-                problem = "$code: ${message.take(90)}"
+                    val detail = runCatching {
+                        BufferedReader(InputStreamReader(conn.errorStream, "UTF-8"))
+                            .use { it.readText() }
+                    }.getOrNull().orEmpty()
 
-                // A bad key, a blocked key or a quota limit will not be fixed
-                // by asking a different model, so stop rather than hammer.
-                if (code == 400 || code == 401 || code == 403 || code == 429) break
-            } catch (e: Exception) {
-                problem = e.javaClass.simpleName.removeSuffix("Exception")
-                    .ifEmpty { "network" }
-                break
-            } finally {
-                conn.disconnect()
+                    val message = runCatching {
+                        JSONObject(detail).getJSONObject("error").getString("message")
+                    }.getOrNull() ?: detail.take(80)
+
+                    problem = "$code: ${message.take(90)}"
+
+                    // A bad key, a blocked key or a quota limit will not be fixed
+                    // by asking a different model, so stop rather than hammer.
+                    if (code == 400 || code == 401 || code == 403) {
+                        lastError = problem.ifEmpty { "koi jawab nahi" }
+                        return null
+                    }
+
+                    // 429 (rate limit) ya 503 (server busy): ek baar ruk kar
+                    // wahi model dobara, phir agla model.
+                    if ((code == 429 || code == 503) && attempt < 2) {
+                        runCatching { Thread.sleep(3000) }
+                        continue
+                    }
+                    // 404 (retired model) aur baaki codes: seedha agla model.
+                    break
+                } catch (e: Exception) {
+                    problem = e.javaClass.simpleName.removeSuffix("Exception")
+                        .ifEmpty { "network" }
+                    break
+                } finally {
+                    conn.disconnect()
+                }
             }
         }
 

@@ -99,14 +99,23 @@ class SaathiAccessibilityService : AccessibilityService() {
 
     // ---------------------------------------------------------------- send
 
+    // v3.3: pehle sirf 9 baar 400ms par try hota tha (kul ~3.6 sec).
+    // WhatsApp ka chat aksar usse der se khulta hai, isliye tap
+    // chat khulne se pehle hi khatam ho jata tha aur message sirf
+    // likha hua reh jata tha. Ab 30 baar 500ms par (kul ~15 sec)
+    // try hota hai, aur sirf tab tap hota hai jab saamne wali
+    // window sach mein WhatsApp/Business ho — kisi aur app ka
+    // button galti se nahi dabega.
     private fun trySendRepeatedly(attempt: Int = 0) {
-        if (attempt > 8) return
+        if (attempt > 30) return
         if (tapSend()) return
-        main.postDelayed({ trySendRepeatedly(attempt + 1) }, 400)
+        main.postDelayed({ trySendRepeatedly(attempt + 1) }, 500)
     }
 
     private fun tapSend(): Boolean {
         val root = rootInActiveWindow ?: return false
+        val pkg = root.packageName?.toString().orEmpty()
+        if (pkg != "com.whatsapp" && pkg != "com.whatsapp.w4b") return false
 
         // WhatsApp's send button, by id first — far more reliable than text,
         // which changes with the app's language.
@@ -132,6 +141,26 @@ class SaathiAccessibilityService : AccessibilityService() {
             }
         }
 
+        // Icon-only send button: na text hota hai, na hamesha wahi id.
+        // Poora tree dekh kar send wali cheez dhoondhein — id mein
+        // "send" ho, ya contentDescription mein Send/भेजें likha ho.
+        return tapSendByTree(root)
+    }
+
+    private fun tapSendByTree(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        val viewId = runCatching { node.viewIdResourceName }.getOrNull().orEmpty()
+        val desc = node.contentDescription?.toString().orEmpty()
+        val isSend = viewId.contains("send", ignoreCase = true) ||
+            desc.equals("Send", ignoreCase = true) ||
+            desc.contains("भेजें")
+        if (isSend && node.isClickable) {
+            if (node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        }
+        for (i in 0 until node.childCount) {
+            val child = runCatching { node.getChild(i) }.getOrNull()
+            if (child != null && tapSendByTree(child)) return true
+        }
         return false
     }
 }

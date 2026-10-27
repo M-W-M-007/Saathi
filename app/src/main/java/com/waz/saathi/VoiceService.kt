@@ -494,6 +494,26 @@ class VoiceService : Service() {
                 Speaker.say(this, outcome.message)
                 History.add(this, spoken, outcome.message, outcome.ok)
                 Conversation.add(spoken, outcome.message)
+                // v3.3: dialer / WhatsApp / SMS khulne ke baad Saathi ka
+                // panel screen ke neeche 45% par reh jata tha aur call
+                // ya send button ko dhak deta tha — user button dabaa
+                // hi nahi pata tha. Isliye doosri app khulne wale
+                // kaam ke baad panel 4 second mein khud hat jayega,
+                // taaki neeche wala button dikhe aur dab sake. Agar
+                // user usse pehle dobara bolna shuru kar de toh naya
+                // panel nahi hatega (panel instance check).
+                if (command.action in setOf(
+                        Command.Action.OPEN_APP,
+                        Command.Action.CALL,
+                        Command.Action.SEND_SMS,
+                        Command.Action.WHATSAPP
+                    )
+                ) {
+                    val shownPanel = panel
+                    main.postDelayed({
+                        if (panel != null && panel === shownPanel) removePanelQuietly()
+                    }, 4000)
+                }
             }
         }.start()
     }
@@ -672,6 +692,16 @@ class VoiceService : Service() {
 
     private fun removePanel() {
         Speaker.stop()
+        pending = null
+        choices = emptyList()
+        plan = emptyList()
+        panel?.let { runCatching { windowManager.removeView(it) } }
+        panel = null
+    }
+
+    // removePanel() jaisa, lekin bolna band kiye bina — auto-dismiss
+    // ke liye, taaki outcome ki awaaz poori sunai de.
+    private fun removePanelQuietly() {
         pending = null
         choices = emptyList()
         plan = emptyList()

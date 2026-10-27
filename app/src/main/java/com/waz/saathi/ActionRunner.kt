@@ -26,7 +26,7 @@ object ActionRunner {
         Command.Action.OPEN_APP -> openApp(context, command.target)
         Command.Action.CALL -> call(context, command.target, command.speak)
         Command.Action.SEND_SMS -> sendSms(context, command.target, command.text, command.speak)
-        Command.Action.WHATSAPP -> whatsapp(context, command.target, command.text, command.speak)
+        Command.Action.WHATSAPP -> whatsapp(context, command.target, command.text, command.speak, command.hint)
         Command.Action.TYPE_TEXT -> typeText(context, command.text)
         Command.Action.CREATE_FOLDER -> createFolder(command.from, command.to)
         Command.Action.MOVE_FILE -> moveOrCopy(command, move = true)
@@ -110,15 +110,29 @@ object ActionRunner {
      * typed; sending it needs one tap, or the accessibility service if the user
      * has turned that on.
      */
-    private fun whatsapp(context: Context, who: String, body: String, label: String): Outcome {
-        if (!AppIndex.packageInstalled(context, "com.whatsapp") &&
-            !AppIndex.packageInstalled(context, "com.whatsapp.w4b")
-        ) {
+    private fun whatsapp(
+        context: Context,
+        who: String,
+        body: String,
+        label: String,
+        hint: String = ""
+    ): Outcome {
+        val personalInstalled = AppIndex.packageInstalled(context, "com.whatsapp")
+        val businessInstalled = AppIndex.packageInstalled(context, "com.whatsapp.w4b")
+        if (!personalInstalled && !businessInstalled) {
             return Outcome(false, "WhatsApp install nahi hai.")
         }
 
+        val wantBusiness = hint.contains("business", ignoreCase = true)
+        val chosenPackage = when {
+            wantBusiness && businessInstalled -> "com.whatsapp.w4b"
+            wantBusiness && personalInstalled -> "com.whatsapp"
+            personalInstalled -> "com.whatsapp"
+            else -> "com.whatsapp.w4b"
+        }
+
         if (who.isBlank()) {
-            val intent = AppIndex.launchIntent(context, "com.whatsapp")
+            val intent = AppIndex.launchIntent(context, chosenPackage)
                 ?: return Outcome(false, "WhatsApp khul nahi paaya.")
             context.startActivity(intent)
             return Outcome(true, "WhatsApp khul gaya.")
@@ -137,14 +151,28 @@ object ActionRunner {
             "https://wa.me/$number?text=" + Uri.encode(body)
         )
 
-        context.startActivity(
-            Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
+        // v3.3: wa.me intent ko chosen package par pin karein. Pehle
+        // generic intent tha, isliye Business bolne par bhi personal
+        // WhatsApp khul jata tha (ya chooser atak jata tha).
+        val viewIntent = Intent(Intent.ACTION_VIEW, uri)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { viewIntent.setPackage(chosenPackage) }
+        context.startActivity(viewIntent)
 
         val autoSend = SaathiAccessibilityService.isRunning
         if (autoSend && body.isNotBlank()) {
             SaathiAccessibilityService.requestSend()
-            return Outcome(true, "$name ko WhatsApp message bhej raha hoon.")
+            // v3.3: pehle yeh jhootha daava karta tha ki message bhej
+            // diya, jabki Accessibility ka tap aksar WhatsApp khulne
+            // se pehle hi khatam ho jata tha. Ab details mein saaf hai
+            // ki agar send na dabe to chat mein send khud dabayein —
+            // chat aur message dono pehle se khule hue hain, isliye
+            // yeh fallback hamesha kaam karta hai.
+            return Outcome(
+                true,
+                "$name ko WhatsApp message bhej raha hoon.",
+                listOf("Agar send button khud na dabe to chat mein send dabayein.")
+            )
         }
 
         return Outcome(
