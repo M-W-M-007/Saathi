@@ -281,15 +281,19 @@ class VoiceService : Service() {
 
         // A watchdog, because a silent stall here is what the user actually
         // sees: the panel sat on "Samajh raha hoon…" with no way forward.
-        // Whatever happens on the worker thread, the panel moves on.
-        val settled = java.util.concurrent.atomic.AtomicBoolean(false)
+        // v3.5: pehle timeout ke baad Gemini ka der se aaya jawab phenk
+        // diya jata tha — user ko sirf timeout dikhta tha, kaam kabhi
+        // nahi hota tha. Ab timeout sirf ek message hai, uske baad aaya
+        // jawab bhi panel par aa jayega aur chalega. "planned" sirf
+        // isliye hai ki timeout/progress doosri baar na dikhein.
+        val planned = java.util.concurrent.atomic.AtomicBoolean(false)
 
         // v3.4: 22 second bahut kam tha — Gemini ke 429/503 retry aur
         // chaar model try karne mein usse zyada lag jata tha, aur user
         // ko lagta tha app ruk gaya hai. 45 second ka timeout, aur
         // 15 second par ek progress line, taaki beech mein khamoshi na ho.
         val timeout = Runnable {
-            if (settled.compareAndSet(false, true)) {
+            if (!planned.get()) {
                 updatePanel(
                     "Samajhne mein bahut der lag gayi. Dobara boliye, ya chhota command dein.",
                     spoken
@@ -297,7 +301,7 @@ class VoiceService : Service() {
             }
         }
         val progress = Runnable {
-            if (!settled.get()) {
+            if (!planned.get()) {
                 updatePanel("Gemini se pooch raha hoon, thoda rukiye…", spoken)
             }
         }
@@ -310,11 +314,10 @@ class VoiceService : Service() {
                 .getOrElse { listOf(Command(Command.Action.UNKNOWN, text = spoken)) }
 
             main.post {
-                if (settled.compareAndSet(false, true)) {
-                    main.removeCallbacks(timeout)
-                    main.removeCallbacks(progress)
-                    onPlanned(spoken, steps)
-                }
+                planned.set(true)
+                main.removeCallbacks(timeout)
+                main.removeCallbacks(progress)
+                onPlanned(spoken, steps)
             }
         }.start()
     }

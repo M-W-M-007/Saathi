@@ -172,10 +172,18 @@ object CommandParser {
             """(?:\s+(.+))?$"""
     )
 
+    // v3.5: "WhatsApp per Wajid ko ek message send karo how r u" —
+    // purana pattern "ek" se pehle aur "message send karo" par toot
+    // jata tha, kyunki verb list mein sirf "message kar" tha, "message
+    // send kar" nahi. Ab "ek" optional hai aur verb mein "message send
+    // kar / message send" bhi hai. "WhatsApp per" wale case mein slot()
+    // shuru ka "per" hata deta hai, isliye who "wajid" banta hai, na
+    // ki "per wajid" ya "whatsapp".
     private val WHATSAPP = Regex(
         """^(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?(.+?)\s+ko\s+""" +
-            """(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?""" +
-            """(?:likho|likh\s*do|likhiye|bhejo|bhej\s*do|bhejiye|message\s*kar(?:o|iye)?|msg)""" +
+            """(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?(?:ek\s+)?""" +
+            """(?:likho|likh\s*do|likhiye|bhejo|bhej\s*do|bhejiye|message\s*kar(?:o|iye)?|""" +
+            """message\s+send\s*kar(?:o|iye)?|message\s+send|msg\s+send\s*kar(?:o|iye)?|msg)""" +
             """\s*[:,\-]?\s*(.+)$"""
     )
 
@@ -223,8 +231,9 @@ object CommandParser {
 
     private val WHATSAPP_NO_BODY = Regex(
         """^(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?(.+?)\s+ko\s+""" +
-            """(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?""" +
-            """(?:likho|likh\s*do|likhiye|bhejo|bhej\s*do|bhejiye|message\s*kar(?:o|iye)?|msg)\s*$"""
+            """(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?(?:ek\s+)?""" +
+            """(?:likho|likh\s*do|likhiye|bhejo|bhej\s*do|bhejiye|message\s*kar(?:o|iye)?|""" +
+            """message\s+send\s*kar(?:o|iye)?|message\s+send|msg)\s*$"""
     )
 
     // v3.4: "Ammi new number per Ek how are you ka message bhejo" —
@@ -241,8 +250,13 @@ object CommandParser {
     // v3.4: folder kholna, banana nahi. "Download mein test folder
     // open karo" / "test folder kholo" / "download folder open karo"
     // (aakhri mein to = download hi hai, matlab Download folder khud).
+    // v3.5: user ki asli boli "download mein ek test naam SE folder
+    // HAI USE open karo" hai — "naam ka" nahi, "naam se" hai, aur
+    // "hai use" bhi hai. Dono ko optional kar diya, warna yeh bhi
+    // Gemini par ja kar timeout ho jata tha.
     private val FOLDER_OPEN_PARENT = Regex(
-        """^(?:(.+?)\s+(?:mein|me|main|ke\s+andar)\s+)?(.+?)\s+(?:naam\s+ka\s+)?folder\s+""" +
+        """^(?:(.+?)\s+(?:mein|me|main|ke\s+andar)\s+)?(?:ek\s+)?(.+?)\s+(?:naam\s+(?:ka|se)\s+)?folder\s+""" +
+            """(?:hai\s+)?(?:use\s+|usko\s+|isko\s+)?""" +
             """(?:open\s*kar(?:o|iye|ein|na)?|open|kholo|khol\s*do|khol|dikhao|dikhaiye)\s*$"""
     )
 
@@ -347,7 +361,10 @@ object CommandParser {
         val waHint = if (isBusiness) "whatsapp business" else "whatsapp"
         WHATSAPP.find(waText)?.let { m ->
             val who = slot(m.groupValues[1])
+            // "likho ki test message hai" mein body "ki test message
+            // hai" nahi, "test message hai" honi chahiye.
             val body = m.groupValues[2].trim()
+                .let { if (it.startsWith("ki ")) it.removePrefix("ki ") else it }
             if (who.isNotEmpty() && body.isNotEmpty()) {
                 // The slots here are pinned by "ko" and the verb, so a long
                 // message body does not make the parse any less certain.
@@ -364,7 +381,12 @@ object CommandParser {
         WHATSAPP_PER.find(waText)?.let { m ->
             val who = slot(m.groupValues[1])
             val body = m.groupValues[2].trim()
-            if (who.isNotEmpty() && body.isNotEmpty() &&
+            // v3.5: "WhatsApp per Wajid ko ..." mein PER pattern galat
+            // who "whatsapp" bana deta tha. Platform kabhi contact nahi
+            // hota — is case ko WHATSAPP pattern par chhod dein, jo
+            // slot() se "per wajid" ko "wajid" bana deta hai.
+            if (who.isNotEmpty() && !who.contains("whatsapp") &&
+                body.isNotEmpty() &&
                 body !in setOf("bhejo", "bhej", "message", "msg")
             ) {
                 return Guess(
@@ -568,7 +590,9 @@ object CommandParser {
     }
 
     /** Hindi case markers, which cling to the end of a slot: "mummy ko". */
-    private val TAIL = setOf("ko", "ka", "ki", "ke", "se", "par", "pe", "pr", "mein", "me")
+    // v3.5: "per" bhi isi list mein hai, warna "per wajid" ka contact
+    // "per wajid" ban jata hai aur kabhi nahi milta.
+    private val TAIL = setOf("ko", "ka", "ki", "ke", "se", "par", "pe", "per", "pr", "mein", "me")
 
     private fun slot(value: String): String {
         val words = value.trim().trim(',', '.', '!', '?', ':', ';')
