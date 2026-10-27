@@ -58,7 +58,7 @@ object CommandParser {
     // isliye list se hata diye. flash-lite-latest abhi 3.5-flash-lite ko
     // hi point karta hai, isliye woh doosra fallback hai, pehla nahi.
     private val MODELS = listOf(
-        "gemini-3.5-flash-lite",
+   "gemini-3.5-flash-lite",
         "gemini-flash-lite-latest",
         "gemini-3.8-flash",
         "gemini-flash-latest"
