@@ -35,12 +35,21 @@ class SpeechInput(private val context: Context) {
     /** Caps the automatic retries, so a failure cannot loop forever. */
     private var retries = 0
 
+    // v3.9: language fallback, sirf ek baar. Agar user ne Hindi
+    // chuni hai aur uska model phone par nahi hai, toh network/
+    // no-match par phone default par dobara try karo, warna
+    // recognizer sunna hi band kar deta hai (v3.8 video).
+    private var languageFallbackDone = false
+    private var forcePhoneDefault = false
+
     val isListening: Boolean get() = listening
 
     fun available(): Boolean = SpeechRecognizer.isRecognitionAvailable(context)
 
     fun start(callback: Callback) {
         retries = 0
+        languageFallbackDone = false
+        forcePhoneDefault = false
         launch(callback, offline = false)
     }
 
@@ -95,7 +104,9 @@ class SpeechInput(private val context: Context) {
 
             // Empty means "use whatever the phone is set to", which is almost
             // always a language the device actually has a model for.
-            val chosen = Settings.speechLanguage(context)
+            // v3.9: forcePhoneDefault true ho toh language extra
+            // bilkul mat do, chahe Settings mein Hindi hi kyun na ho.
+            val chosen = if (forcePhoneDefault) "" else Settings.speechLanguage(context)
             if (chosen.isNotEmpty()) {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, chosen)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, chosen)
@@ -135,6 +146,23 @@ class SpeechInput(private val context: Context) {
      * whose voice model is on-device works when the online path will not.
      */
     private fun handleFailure(error: Int, callback: Callback, wasOffline: Boolean) {
+        // v3.9 language fallback, sirf ek baar: Hindi (ya koi aur
+        // set language) par network/server/no-match aaye toh phone
+        // default par dobara try karo, uske baad hi normal retry
+        // ya error message. Isse recognizer atak kar band nahi hoga.
+        val languageFailed = error == SpeechRecognizer.ERROR_NETWORK ||
+            error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT ||
+            error == SpeechRecognizer.ERROR_SERVER ||
+            error == SpeechRecognizer.ERROR_NO_MATCH
+        if (languageFailed && !languageFallbackDone &&
+            !forcePhoneDefault && Settings.speechLanguage(context).isNotEmpty()
+        ) {
+            languageFallbackDone = true
+            forcePhoneDefault = true
+            main.postDelayed({ launch(callback, offline = false) }, 150L)
+            return
+        }
+
         val retryable = error == SpeechRecognizer.ERROR_NETWORK ||
             error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT ||
             error == SpeechRecognizer.ERROR_SERVER ||

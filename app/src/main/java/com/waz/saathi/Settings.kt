@@ -39,14 +39,17 @@ object Settings {
      * has no voice model for makes the recogniser fail outright, so "phone
      * default" is the safe default and the others are opt-in.
      */
-    // v3.8: user Hinglish bolta hai, phone ka default English hai,
-    // isliye Hindi shabd galat sunai dete the. Default ab hi-IN hai;
-    // jo user pehle se English set kar chuka hai, uska English hi
-    // rahega, kyunki prefs mein uska chunav maujood hai.
-    fun speechLanguage(context: Context): String {
-        val saved = prefs(context).getString(KEY_LANG, "").orEmpty()
-        return if (saved.isEmpty()) "hi-IN" else saved
-    }
+    // v3.9 REVERT of v3.8: v3.8 mein default hi-IN kar diya tha,
+    // lekin jis phone par Hindi voice model nahi hai, wahan
+    // recognizer network/no-match error dekar sunna hi band kar
+    // deta hai — SpeechInput.kt ki pehle se likhi warning wahi
+    // kehti hai, aur v3.8 video mein wahi hua ("bilkul bhi sunayi
+    // nhi"). Default phir se phone default (empty) hai; jo user
+    // Settings mein Hindi/English chun chuka hai, uska chunav hi
+    // rahega. Hindi chahiye toh Settings mein Hindi chunna hoga,
+    // lekin uske liye phone par Hindi voice model hona zaroori hai.
+    fun speechLanguage(context: Context): String =
+        prefs(context).getString(KEY_LANG, "").orEmpty()
 
     fun setSpeechLanguage(context: Context, tag: String) {
         prefs(context).edit().putString(KEY_LANG, tag).apply()

@@ -381,9 +381,20 @@ object CommandParser {
             )
         }
 
+        // v3.9: "WhatsApp open karo" ka pakka shortcut. v3.8 video
+        // mein ye command offline khulne ki jagah Gemini par ja kar
+        // "pata nahi" ho gaya tha. Ab ye AppIndex par nirbhar hi
+        // nahi karega — naam sirf "whatsapp" ho toh seedha WhatsApp
+        // hi khulega, chahe app list mein kuch bhi ho.
         if (verb in OPEN_VERBS || lead in OPEN_VERBS) {
             OPEN.find(lower)?.let { m ->
                 val name = slot(m.groupValues[1].ifEmpty { m.groupValues[2] })
+                if (name == "whatsapp") {
+                    return Guess(
+                        Command(Command.Action.OPEN_APP, target = "WhatsApp", hint = "whatsapp"),
+                        0.95f
+                    )
+                }
                 if (name.isNotEmpty() && nameLooksClean(name)) {
                     AppIndex.find(context, name)?.let {
                         // A named app that is actually installed is as certain

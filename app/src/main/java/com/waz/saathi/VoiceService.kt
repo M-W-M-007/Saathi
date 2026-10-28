@@ -368,7 +368,11 @@ class VoiceService : Service() {
         // v3.4: Business ke liye choices mat poochho — package pin hai
         // (AppIndex.businessEntry), label chahe kuch bhi ho. Yeh block
         // tabhi chalega jab Business install hi nahi hai.
+        // v3.9: "whatsapp" shortcut ko AppIndex check se mat roko —
+        // parser ne pakka WhatsApp diya hai, aur ActionRunner
+        // package se seedha kholega, chahe app list mein kuch bhi ho.
         if (command.action == Command.Action.OPEN_APP && command.hint.isNotEmpty() &&
+            command.hint != "whatsapp" &&
             !(command.hint.contains("business", ignoreCase = true) &&
                 AppIndex.businessEntry(this) != null)
         ) {

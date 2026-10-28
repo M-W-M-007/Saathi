@@ -165,6 +165,19 @@ object ActionRunner {
     private fun openApp(context: Context, name: String): Outcome {
         if (name.isBlank()) return Outcome(false, "Kaunsi app kholni hai?")
 
+        // v3.9: WhatsApp ka pakka rasta — pehle package se seedha
+        // kholo, AppIndex list par nirbhar mat raho. v3.8 video mein
+        // "WhatsApp open karo" list/Gemini par ja kar fail ho gaya
+        // tha, isliye ye shortcut teesri parat hai (parser +
+        // VoiceService ke baad).
+        if (name.trim().lowercase() == "whatsapp") {
+            val direct = AppIndex.launchIntent(context, "com.whatsapp")
+            if (direct != null) {
+                val ok = runCatching { context.startActivity(direct); true }.getOrDefault(false)
+                if (ok) return Outcome(true, "WhatsApp khul gayi.")
+            }
+        }
+
         // v3.4: Business ke liye AppIndex.find() package pin karta hai
         // (label par bharosa nahi), isliye "WhatsApp Business" yahan
         // bhi w4b hi kholega.
