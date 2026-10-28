@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- v3.7 Siri-style: halka translucent dark, gol upar ke kone. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <solid android:color="#F20E1218" />
-    <corners android:topLeftRadius="20dp" android:topRightRadius="20dp" />
+    <solid android:color="#E61C1E26" />
+    <corners android:topLeftRadius="24dp" android:topRightRadius="24dp" />
 </shape>

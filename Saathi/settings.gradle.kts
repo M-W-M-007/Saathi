@@ -1,9 +1,0 @@
-pluginManagement {
-    repositories { google(); mavenCentral(); gradlePluginPortal() }
-}
-dependencyResolutionManagement {
-    repositories { google(); mavenCentral() }
-}
-
-rootProject.name = "Saathi"
-include(":app")

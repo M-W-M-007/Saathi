@@ -281,18 +281,32 @@ class VoiceService : Service() {
 
         // A watchdog, because a silent stall here is what the user actually
         // sees: the panel sat on "Samajh raha hoon…" with no way forward.
-        // Whatever happens on the worker thread, the panel moves on.
-        val settled = java.util.concurrent.atomic.AtomicBoolean(false)
+        // v3.5: pehle timeout ke baad Gemini ka der se aaya jawab phenk
+        // diya jata tha — user ko sirf timeout dikhta tha, kaam kabhi
+        // nahi hota tha. Ab timeout sirf ek message hai, uske baad aaya
+        // jawab bhi panel par aa jayega aur chalega. "planned" sirf
+        // isliye hai ki timeout/progress doosri baar na dikhein.
+        val planned = java.util.concurrent.atomic.AtomicBoolean(false)
 
+        // v3.4: 22 second bahut kam tha — Gemini ke 429/503 retry aur
+        // chaar model try karne mein usse zyada lag jata tha, aur user
+        // ko lagta tha app ruk gaya hai. 45 second ka timeout, aur
+        // 15 second par ek progress line, taaki beech mein khamoshi na ho.
         val timeout = Runnable {
-            if (settled.compareAndSet(false, true)) {
+            if (!planned.get()) {
                 updatePanel(
                     "Samajhne mein bahut der lag gayi. Dobara boliye, ya chhota command dein.",
                     spoken
                 )
             }
         }
-        main.postDelayed(timeout, 22_000)
+        val progress = Runnable {
+            if (!planned.get()) {
+                updatePanel("Gemini se pooch raha hoon, thoda rukiye…", spoken)
+            }
+        }
+        main.postDelayed(progress, 15_000)
+        main.postDelayed(timeout, 45_000)
 
         // Parsing may call the network, so it never runs on the main thread.
         Thread {
@@ -300,10 +314,10 @@ class VoiceService : Service() {
                 .getOrElse { listOf(Command(Command.Action.UNKNOWN, text = spoken)) }
 
             main.post {
-                if (settled.compareAndSet(false, true)) {
-                    main.removeCallbacks(timeout)
-                    onPlanned(spoken, steps)
-                }
+                planned.set(true)
+                main.removeCallbacks(timeout)
+                main.removeCallbacks(progress)
+                onPlanned(spoken, steps)
             }
         }.start()
     }
@@ -351,25 +365,53 @@ class VoiceService : Service() {
         // "WhatsApp Business" and silently getting WhatsApp is the single thing
         // that wasted the most of the user's evening, and it happened because
         // a near match was treated as a match.
-        if (command.action == Command.Action.OPEN_APP && command.hint.isNotEmpty()) {
+        // v3.4: Business ke liye choices mat poochho — package pin hai
+        // (AppIndex.businessEntry), label chahe kuch bhi ho. Yeh block
+        // tabhi chalega jab Business install hi nahi hai.
+        if (command.action == Command.Action.OPEN_APP && command.hint.isNotEmpty() &&
+            !(command.hint.contains("business", ignoreCase = true) &&
+                AppIndex.businessEntry(this) != null)
+        ) {
             val match = AppIndex.best(this, command.hint)
             val near = AppIndex.matches(this, command.hint)
 
             if (match == null) {
-                val msg = "\"${command.hint}\" naam ki koi app nahi mili."
-                updatePanel(msg, spoken, installedHint(command.hint))
-                Speaker.say(this, msg)
-                Conversation.add(spoken, msg)
+                // v3.7: app nahi mili toh haar nahi — ho sakta hai
+                // user file/folder keh raha ho ("test ko open karke
+                // dikhao"). Dono raste choice mein dein.
+                showChoices(
+                    "\"${command.hint}\" naam ki koi app nahi mili. File/folder hai?",
+                    spoken,
+                    listOf(
+                        "📁 Folder kholo: ${command.hint}" to Command(
+                            Command.Action.OPEN_FOLDER, from = "", to = command.hint
+                        ),
+                        "📄 File dhoondho: ${command.hint}" to Command(
+                            Command.Action.SEARCH_FILE, target = command.hint
+                        )
+                    )
+                )
+                Speaker.say(this, "${command.hint} app nahi mili. File ya folder dhoondhun?")
                 return
             }
 
             if (!match.exact) {
+                // v3.7: near app ke saath file/folder ka rasta bhi
+                // dein — "test" par sirf Notes dena galat tha, jabki
+                // user test folder ki baat kar raha tha.
                 showChoices(
                     "\"${command.hint}\" exactly nahi mili. Inme se koi?",
                     spoken,
                     near.map { app ->
                         app.label to Command(Command.Action.OPEN_APP, target = app.label)
-                    }
+                    } + listOf(
+                        "📁 Folder kholo: ${command.hint}" to Command(
+                            Command.Action.OPEN_FOLDER, from = "", to = command.hint
+                        ),
+                        "📄 File dhoondho: ${command.hint}" to Command(
+                            Command.Action.SEARCH_FILE, target = command.hint
+                        )
+                    )
                 )
                 Speaker.say(this, "${command.hint} nahi mili. Kaunsi kholun?")
                 return
@@ -418,8 +460,14 @@ class VoiceService : Service() {
             main.post {
                 if (found.isEmpty()) {
                     val msg = "\"${command.target}\" contacts mein nahi mila."
-                    updatePanel(msg, spoken)
-                    Speaker.say(this, msg)
+                    // v3.4: mic "sis" ko "syster" sun leta hai, toh poora
+                    // naam bolne par match toot jata hai. Pehla naam hi
+                    // kaafi hai — yeh hint panel par bhi dikhega.
+                    updatePanel(
+                        msg, spoken,
+                        listOf("Sirf pehla naam bolkar dobara try karein, jaise \"Shaheen ko call karo\".")
+                    )
+                    Speaker.say(this, "$msg Sirf pehla naam bolkar dobara try karein.")
                     return@post
                 }
 
@@ -490,18 +538,23 @@ class VoiceService : Service() {
                 .getOrElse { ActionRunner.Outcome(false, "Error: ${it.localizedMessage}") }
 
             main.post {
+                // v3.7: folder ke baad panel par "Files mein kholo"
+                // ka button dein — folder ki list panel par hi hai,
+                // Files app ab khud nahi khulti.
+                if (command.action == Command.Action.OPEN_FOLDER && outcome.ok) {
+                    choices = listOf(
+                        "Files mein kholo" to Command(Command.Action.OPEN_APP, target = "Files")
+                    )
+                }
                 updatePanel(outcome.message, spoken, outcome.details)
                 Speaker.say(this, outcome.message)
                 History.add(this, spoken, outcome.message, outcome.ok)
                 Conversation.add(spoken, outcome.message)
-                // v3.3: dialer / WhatsApp / SMS khulne ke baad Saathi ka
-                // panel screen ke neeche 45% par reh jata tha aur call
-                // ya send button ko dhak deta tha — user button dabaa
-                // hi nahi pata tha. Isliye doosri app khulne wale
-                // kaam ke baad panel 4 second mein khud hat jayega,
-                // taaki neeche wala button dikhe aur dab sake. Agar
-                // user usse pehle dobara bolna shuru kar de toh naya
-                // panel nahi hatega (panel instance check).
+                // v3.7 Siri-style: doosri app khulne ke baad panel
+                // sirf 1.2 second mein hat jaye, taaki neeche wala
+                // button turant dikhe. OPEN_FOLDER is list mein nahi
+                // hai — uski list panel par hi dekhni hai, isliye
+                // woh tab tak rehta hai jab tak user band na kare.
                 if (command.action in setOf(
                         Command.Action.OPEN_APP,
                         Command.Action.CALL,
@@ -512,7 +565,7 @@ class VoiceService : Service() {
                     val shownPanel = panel
                     main.postDelayed({
                         if (panel != null && panel === shownPanel) removePanelQuietly()
-                    }, 4000)
+                    }, 1200)
                 }
             }
         }.start()
@@ -569,16 +622,25 @@ class VoiceService : Service() {
 
         val view = LayoutInflater.from(this).inflate(R.layout.overlay_panel, null)
 
-        // Fixed height: a long file listing must never grow the panel until the
-        // buttons are pushed off-screen and nothing can be dismissed.
+        // v3.7 Siri-style: fixed height khatam. Chhota kaam ho toh
+        // panel sirf utna hi lamba ho jitna text hai — screen cover
+        // nahi karega, peeche ki app dikhti rahegi. Lambi list ke
+        // liye ScrollView ki height 45% par cap ki hai, taaki buttons
+        // kabhi screen se bahar na jayein.
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
-            (screenH * 0.45f).toInt(),
+            WindowManager.LayoutParams.WRAP_CONTENT,
             overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
             PixelFormat.TRANSLUCENT
         ).apply { gravity = Gravity.BOTTOM }
+
+        view.findViewById<View>(R.id.panelScroll)?.let { scroll ->
+            scroll.layoutParams = scroll.layoutParams.apply {
+                height = (screenH * 0.45f).toInt()
+            }
+        }
 
         view.findViewById<View>(R.id.panelClose).setOnClickListener { removePanel() }
         view.findViewById<View>(R.id.panelAgain).setOnClickListener { beginListening() }

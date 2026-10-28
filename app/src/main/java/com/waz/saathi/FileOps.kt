@@ -112,8 +112,20 @@ object FileOps {
      * could hand back a cached thumbnail from an app's sandbox. Matches are now
      * ranked, exact names win, and app sandboxes are skipped entirely.
      */
+    // v3.7: boli hui file ka naam aksar toota hua aata hai — saal
+    // "2026" sunne mein "2000 26" ban jata hai, aur beech mein
+    // "and" jud jata hai. Isliye search se pehle poora shabd "and"
+    // hata dein, aur neeche collect() mein edit-distance wala
+    // fuzzy rank bhi dein, warna saal wali file kabhi nahi milegi.
+    fun fuzzyKey(spokenName: String): String =
+        spokenName.lowercase(Locale.ROOT)
+            .split(Regex("[^a-z0-9]+"))
+            .filter { it.isNotEmpty() && it != "and" }
+            .joinToString("")
+            .filter { it.isLetterOrDigit() }
+
     fun findFiles(spokenName: String, inFolder: File? = null, limit: Int = 3): List<File> {
-        val key = normalize(spokenName)
+        val key = fuzzyKey(spokenName)
         if (key.isEmpty()) return emptyList()
 
         val hits = mutableListOf<Pair<File, Int>>()
@@ -153,6 +165,14 @@ object FileOps {
                 full == key || stem == key -> 0
                 stem.startsWith(key) -> 1
                 stem.contains(key) -> 2
+                // v3.7 fuzzy: "toidelhi20002625pdf" vs asli
+                // "toidelhi20261025pdf" — 4 badlaav, lekin lambi file
+                // ke naam mein woh kaafi nazdeek hai. Edit distance
+                // naam ki lambai ke hisaab se, full naam par bhi
+                // (extension ke saath), warna .pdf wali key stem
+                // se 3 zyada door ho jati hai. Subsequence bhi.
+                minOf(editDistance(stem, key), editDistance(full, key)) <= maxOf(2, key.length / 4) -> 3
+                key.length >= 6 && (stem.contains(key.take(6)) || key.contains(stem.take(6))) -> 3
                 else -> continue
             }
             hits.add(child to rank)
@@ -170,6 +190,27 @@ object FileOps {
 
     private fun normalize(value: String): String =
         value.lowercase(Locale.ROOT).filter { it.isLetterOrDigit() }
+
+    /** Chhoti strings ke liye Levenshtein distance. */
+    private fun editDistance(a: String, b: String): Int {
+        if (a == b) return 0
+        if (a.isEmpty()) return b.length
+        if (b.isEmpty()) return a.length
+        var prev = IntArray(b.length + 1) { it }
+        var cur = IntArray(b.length + 1)
+        for (i in a.indices) {
+            cur[0] = i + 1
+            for (j in b.indices) {
+                cur[j + 1] = minOf(
+                    prev[j + 1] + 1,
+                    cur[j] + 1,
+                    prev[j] + if (a[i] == b[j]) 0 else 1
+                )
+            }
+            val tmp = prev; prev = cur; cur = tmp
+        }
+        return prev[b.length]
+    }
 
     fun createFolder(parentSpoken: String, name: String): Result<File> = runCatching {
         // v3.3: pehle resolveFolder() alias folder ke na hone par null

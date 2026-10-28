@@ -92,9 +92,26 @@ object ContactIndex {
     }
 
     /**
+     * Titles the recogniser adds or garbles: "Shaheen sis" is heard as
+     * "Shaheen syster", "Shaheen sister" is saved as "Shaheen Sis". The
+     * title is not the person's name, so it is dropped before matching —
+     * the first name alone is what identifies the contact.
+     */
+    private val TITLES = setOf(
+        "sis", "syster", "sister", "sistar", "bhai", "bhaiya", "bhayya",
+        "didi", "ji", "aunty", "uncle", "madam", "sir"
+    )
+
+    /**
      * 1.0 exact, then whole-word and prefix matches. Substring matching only
      * counts when the contact's own name is long enough to be distinctive, so
      * short initials can never be dragged in by a long spoken sentence.
+     *
+     * v3.4: two fallbacks sit below the strict rules, because the
+     * recogniser garbles names ("shaheen syster" for "shaheen sis"):
+     * title-stripping, then per-word fuzzy matching. Both are capped
+     * below the strict scores, so a fuzzy guess can never beat a real
+     * exact match — it only stops a "nahi mila" when nothing strict hit.
      */
     private fun score(needle: String, needleWords: List<String>, display: String): Float {
         if (display.isEmpty()) return 0f
@@ -118,7 +135,76 @@ object ContactIndex {
         // safe for names long enough not to be an accident.
         if (display.length >= 5 && needle.contains(display)) return 0.6f
 
+        // Title stripped: "shaheen syster" -> "shaheen", which then
+        // matches "shaheen sis" by the whole-word rule above.
+        val strippedWords = needleWords.filter { it !in TITLES }
+        if (strippedWords.isNotEmpty() && strippedWords.size < needleWords.size &&
+            strippedWords.all { w -> displayWords.any { it == w } }
+        ) {
+            return 0.88f
+        }
+        if (strippedWords.size == 1 && displayWords.any { it == strippedWords.first() }) {
+            return 0.88f
+        }
+        // Title stripped + fuzzy: "shahin syster" -> "shahin", which is
+        // 2 edits from "shaheen", so it still finds "shaheen sis".
+        if (strippedWords.isNotEmpty() && strippedWords.size < needleWords.size) {
+            val strippedBest = strippedWords.map { w ->
+                displayWords.maxOfOrNull { wordScore(w, it) } ?: 0f
+            }
+            if (strippedBest.all { it > 0f } && strippedBest.average() >= 0.7) {
+                return 0.80f
+            }
+        }
+
+        // Per-word fuzzy: each spoken word must be close to some word in
+        // the saved name (prefix or at most 2 edits for words of 4+),
+        // and at least one word must be a strong match. "shahin" is
+        // 2 edits from "shaheen", so "shahin syster" still finds
+        // "shaheen sis" once "syster" is stripped above — but a word
+        // with no close neighbour scores 0 and kills the candidate,
+        // so random names cannot sneak in on one good word.
+        if (needleWords.isNotEmpty()) {
+            val bestPerWord = needleWords.map { w ->
+                displayWords.maxOfOrNull { wordScore(w, it) } ?: 0f
+            }
+            val strong = bestPerWord.any { it >= 0.85f }
+            val average = bestPerWord.average().toFloat()
+            if (strong && average >= 0.6f && bestPerWord.all { it > 0f }) {
+                return 0.55f + 0.30f * average
+            }
+        }
+
         return 0f
+    }
+
+    /** 1.0 exact, 0.85 prefix, otherwise edit-distance similarity, else 0. */
+    private fun wordScore(a: String, b: String): Float {
+        if (a == b) return 1f
+        if (a.length >= 3 && (b.startsWith(a) || a.startsWith(b))) return 0.85f
+        if (a.length < 4 || b.length < 4) return 0f
+        val dist = levenshtein(a, b)
+        if (dist > 2) return 0f
+        return 1f - dist.toFloat() / maxOf(a.length, b.length)
+    }
+
+    private fun levenshtein(a: String, b: String): Int {
+        var prev = IntArray(b.length + 1) { it }
+        var cur = IntArray(b.length + 1)
+        for (i in 1..a.length) {
+            cur[0] = i
+            for (j in 1..b.length) {
+                cur[j] = minOf(
+                    prev[j] + 1,
+                    cur[j - 1] + 1,
+                    prev[j - 1] + if (a[i - 1] == b[j - 1]) 0 else 1
+                )
+            }
+            val tmp = prev
+            prev = cur
+            cur = tmp
+        }
+        return prev[b.length]
     }
 
     private fun normalize(value: String): String =

@@ -38,6 +38,8 @@ data class Command(
         COPY_FILE,
         DELETE_FILE,
         LIST_FILES,
+        OPEN_FOLDER,
+        CREATE_FILE,
         SEARCH_FILE,
         OPEN_SETTINGS,
         UNKNOWN
@@ -69,6 +71,8 @@ data class Command(
         Action.COPY_FILE -> "$from ko $to mein copy karun?"
         Action.DELETE_FILE -> "$from delete karun?"
         Action.LIST_FILES -> "$from ki files dikhaun"
+        Action.OPEN_FOLDER -> "$to folder kholun"
+        Action.CREATE_FILE -> "File banaun: $to"
         Action.SEARCH_FILE -> "$target dhoondhun"
         Action.OPEN_SETTINGS -> "Settings kholun"
         Action.UNKNOWN -> "Samajh nahi aaya"

@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="app_name">Saathi</string>
-    <string name="accessibility_label">Saathi — kisi bhi app mein likhne ke liye</string>
-    <string name="accessibility_description">Saathi ko kisi bhi app ke text box mein likhne aur send dabane ki ijazat deta hai. Yeh sirf tab chalta hai jab aap koi command bolte hain.</string>
-</resources>

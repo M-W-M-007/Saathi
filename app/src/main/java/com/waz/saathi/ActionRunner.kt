@@ -33,6 +33,8 @@ object ActionRunner {
         Command.Action.COPY_FILE -> moveOrCopy(command, move = false)
         Command.Action.DELETE_FILE -> deleteFile(command.from)
         Command.Action.LIST_FILES -> listFiles(command.from)
+        Command.Action.OPEN_FOLDER -> openFolder(context, command.from, command.to)
+        Command.Action.CREATE_FILE -> createFile(command.from, command.to)
         Command.Action.SEARCH_FILE -> searchFile(command.target)
         Command.Action.OPEN_SETTINGS -> openSettings(context)
         Command.Action.UNKNOWN -> Outcome(false, "Yeh samajh nahi aaya.")
@@ -40,9 +42,77 @@ object ActionRunner {
 
     // ---------------------------------------------------------------- apps
 
+    // v3.7: folder kholna, Siri-style. v3.4 mein Files app bhi khul
+    // jati thi, aur user ko lagta tha "kewal file manager khula,
+    // folder nahi khula" — kyunki Android kisi folder ko seedha
+    // Files app mein usi jagah par nahi kholta, woh hamesha Recent
+    // ya generic jagah par khulta hai. Isliye ab default yeh hai:
+    // folder Saathi ke panel ke andar hi khulta hai, uski list
+    // panel par dikhti hai, aur panel tab tak rehta hai jab tak
+    // user band na kare. Files app ab khud nahi khulti — panel
+    // par "Files mein kholo" ka button milta hai, jo VoiceService
+    // execute() mein lagata hai, taaki user chahe toh wahan bhi
+    // ja sake, lekin folder ka saboot pehle panel par hi ho.
+    private fun openFolder(context: Context, parent: String, name: String): Outcome {
+        requireStorage()?.let { return it }
+
+        // "download folder open karo" mein to = download hai, matlab
+        // Download folder khud. "download mein test folder" mein
+        // parent = download, to = test, matlab Download ke andar test.
+        val folder = when {
+            name.isBlank() -> null
+            parent.isBlank() -> FileOps.resolveFolder(name)
+            else -> {
+                val base = FileOps.resolveFolder(parent)
+                if (base != null) {
+                    val child = File(base, name)
+                    if (child.isDirectory) child else FileOps.resolveFolder(name)
+                } else {
+                    FileOps.resolveFolder(name)
+                }
+            }
+        } ?: return Outcome(false, "\"$name\" folder nahi mila.")
+
+        val items = FileOps.list(folder)
+        val details = items.map { if (it.isDirectory) "📁 ${it.name}" else "📄 ${it.name}" }
+
+        return Outcome(
+            true,
+            "${FileOps.shortPath(folder)} khul gaya — usme ${items.size} cheezein hain.",
+            details
+        )
+    }
+
+    // v3.7: text file banana. Naam mein .txt na ho toh laga dein,
+    // aur pehle se maujood naam par overwrite kabhi nahi — (2) banega.
+    private fun createFile(parent: String, name: String): Outcome {
+        requireStorage()?.let { return it }
+        if (name.isBlank()) return Outcome(false, "File ka naam nahi mila.")
+
+        val folder = if (parent.isBlank()) FileOps.resolveFolder("") else FileOps.resolveFolder(parent)
+            ?: return Outcome(false, "\"$parent\" folder nahi mila.")
+
+        val baseName = if (name.endsWith(".txt", ignoreCase = true)) name else "$name.txt"
+        var target = File(folder, baseName)
+        var n = 2
+        while (target.exists() && n < 1000) {
+            val stem = baseName.removeSuffix(".txt")
+            target = File(folder, "$stem ($n).txt")
+            n++
+        }
+
+        return runCatching {
+            require(target.createNewFile()) { "File nahi bani." }
+            Outcome(true, "${FileOps.shortPath(target)} ban gayi.")
+        }.getOrElse { Outcome(false, it.message ?: "File nahi bani.") }
+    }
+
     private fun openApp(context: Context, name: String): Outcome {
         if (name.isBlank()) return Outcome(false, "Kaunsi app kholni hai?")
 
+        // v3.4: Business ke liye AppIndex.find() package pin karta hai
+        // (label par bharosa nahi), isliye "WhatsApp Business" yahan
+        // bhi w4b hi kholega.
         val entry = AppIndex.find(context, name)
             ?: return Outcome(false, "\"$name\" naam ki koi app nahi mili.")
 

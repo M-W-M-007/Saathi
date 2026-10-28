@@ -58,7 +58,7 @@ object CommandParser {
     // isliye list se hata diye. flash-lite-latest abhi 3.5-flash-lite ko
     // hi point karta hai, isliye woh doosra fallback hai, pehla nahi.
     private val MODELS = listOf(
-   "gemini-3.5-flash-lite",
+        "gemini-3.5-flash-lite",
         "gemini-flash-lite-latest",
         "gemini-3.8-flash",
         "gemini-flash-latest"
@@ -90,11 +90,31 @@ object CommandParser {
         val text = spoken.trim()
         if (text.isEmpty()) return emptyList()
 
-        val lower = text.lowercase(Locale.ROOT)
+        // v3.4: mic aksar "WhatsApp" ko "what's" / "whats app" sun leta hai
+        // ("what's the business open karo"). Us galat sunai ko yahan hi
+        // WhatsApp mein badal dein, warna na rules samajh paate hain aur
+        // na Gemini — dono "pata nahi" bol dete hain. Original spoken
+        // panel par waisa hi dikhta hai, sirf parse ke liye badla hai.
+        // IMPORTANT: yeh badlao sirf tab, jab baat app kholne ki ho.
+        // Message ki body mein "what's up" aana normal hai, usko
+        // WhatsApp mein badalna body ko kharab kar dega.
+        val lowerOrig = text.lowercase(Locale.ROOT)
+        val hasWhatsMisheard = Regex("""\bwhat'?s\b""").containsMatchIn(lowerOrig)
+        val hasOpenVerb = listOf("open", "kholo", "khol", "launch", "chalu", "start")
+            .any { v -> Regex("""\b${Regex.escape(v)}\b""").containsMatchIn(lowerOrig) }
+        val parsedText = if (hasWhatsMisheard && hasOpenVerb) {
+            text
+                .replace(Regex("what'?s\\s+app", RegexOption.IGNORE_CASE), "WhatsApp")
+                .replace(Regex("what'?s\\b", RegexOption.IGNORE_CASE), "WhatsApp")
+        } else {
+            text
+        }
+
+        val lower = parsedText.lowercase(Locale.ROOT)
         val correcting = !Conversation.isEmpty() &&
             CORRECTION.any { lower.contains(Regex("""\b${Regex.escape(it)}\b""")) }
 
-        val guess = runCatching { rules(context, text) }
+        val guess = runCatching { rules(context, parsedText) }
             .getOrElse { Guess(Command(Command.Action.UNKNOWN, text = text), 0f) }
 
         // A correction always goes to the model, however confident the rules
@@ -107,7 +127,7 @@ object CommandParser {
         if (Settings.geminiKey(context).isEmpty()) {
             lastSource = "Gemini key nahi"
         } else {
-            val steps = runCatching { gemini(context, text) }.getOrNull()
+            val steps = runCatching { gemini(context, parsedText) }.getOrNull()
             when {
                 steps == null -> lastSource = "Gemini fail" +
                     lastError.takeIf { it.isNotEmpty() }?.let { " ($it)" }.orEmpty()
@@ -152,10 +172,18 @@ object CommandParser {
             """(?:\s+(.+))?$"""
     )
 
+    // v3.5: "WhatsApp per Wajid ko ek message send karo how r u" —
+    // purana pattern "ek" se pehle aur "message send karo" par toot
+    // jata tha, kyunki verb list mein sirf "message kar" tha, "message
+    // send kar" nahi. Ab "ek" optional hai aur verb mein "message send
+    // kar / message send" bhi hai. "WhatsApp per" wale case mein slot()
+    // shuru ka "per" hata deta hai, isliye who "wajid" banta hai, na
+    // ki "per wajid" ya "whatsapp".
     private val WHATSAPP = Regex(
         """^(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?(.+?)\s+ko\s+""" +
-            """(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?""" +
-            """(?:likho|likh\s*do|likhiye|bhejo|bhej\s*do|bhejiye|message\s*kar(?:o|iye)?|msg)""" +
+            """(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?(?:ek\s+)?""" +
+            """(?:likho|likh\s*do|likhiye|bhejo|bhej\s*do|bhejiye|message\s*kar(?:o|iye)?|""" +
+            """message\s+send\s*kar(?:o|iye)?|message\s+send|msg\s+send\s*kar(?:o|iye)?|msg)""" +
             """\s*[:,\-]?\s*(.+)$"""
     )
 
@@ -203,8 +231,52 @@ object CommandParser {
 
     private val WHATSAPP_NO_BODY = Regex(
         """^(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?(.+?)\s+ko\s+""" +
+            """(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?(?:ek\s+)?""" +
+            """(?:likho|likh\s*do|likhiye|bhejo|bhej\s*do|bhejiye|message\s*kar(?:o|iye)?|""" +
+            """message\s+send\s*kar(?:o|iye)?|message\s+send|msg)\s*$"""
+    )
+
+    // v3.4: "Ammi new number per Ek how are you ka message bhejo" —
+    // purana WHATSAPP sirf "ko" se milta tha, isliye "per" wali baat
+    // Gemini par ja kar 22 second mein timeout ho jati thi. Yahan
+    // slot "per/pe/par" se pin hai, message "ka message bhejo" se.
+    private val WHATSAPP_PER = Regex(
+        """^(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?(.+?)\s+(?:per|pe|par|pr)\s+""" +
             """(?:whatsapp\s*(?:par|pe|pr|me|mein)?\s+)?""" +
-            """(?:likho|likh\s*do|likhiye|bhejo|bhej\s*do|bhejiye|message\s*kar(?:o|iye)?|msg)\s*$"""
+            """(?:likho\s+(?:ki\s+)?|message\s+)?(.+?)""" +
+            """(?:\s+ka\s+message|\s+message|\s+msg)?(?:\s+bhej(?:o|na|dein|dijiye|do|na))?$"""
+    )
+
+    // v3.4: folder kholna, banana nahi. "Download mein test folder
+    // open karo" / "test folder kholo" / "download folder open karo"
+    // (aakhri mein to = download hi hai, matlab Download folder khud).
+    // v3.5: user ki asli boli "download mein ek test naam SE folder
+    // HAI USE open karo" hai — "naam ka" nahi, "naam se" hai, aur
+    // "hai use" bhi hai. Dono ko optional kar diya, warna yeh bhi
+    // Gemini par ja kar timeout ho jata tha.
+    private val FOLDER_OPEN_PARENT = Regex(
+        """^(?:(.+?)\s+(?:mein|me|main|ke\s+andar)\s+)?(?:ek\s+)?(.+?)\s+(?:naam\s+(?:ka|se)\s+)?folder\s+""" +
+            // v3.6: "folder KO open karo / folder KO kholo" — "ko" ke
+            // bina pattern milta hi nahi tha, isliye yeh bhi Gemini
+            // par ja kar marr jata tha.
+            """(?:ko\s+)?(?:hai\s+)?(?:use\s+|usko\s+|isko\s+)?""" +
+            """(?:open\s*kar(?:o|iye|ein|na)?|open|kholo|khol\s*do|khol|dikhao|dikhaiye)\s*$"""
+    )
+
+    // v3.7: "download open karo" / "documents open karo" — folder
+    // shabd ke bina bhi folder hi kholna hai, app nahi. Pehle yeh
+    // OPEN_APP par ja kar generic Files khol deta tha.
+    private val ALIAS_FOLDER_OPEN = Regex(
+        """^(download|downloads|document|documents|pictures|music|movies|dcim|camera)\s+""" +
+            """(?:ko\s+)?(?:open\s*kar(?:o|iye|ein|na)?|open|kholo|khol\s*do|khol|dikhao|dikhaiye)\s*$"""
+    )
+
+    // v3.7: "ek text file banao" / "documents mein notes naam ki
+    // text file banao". Pehle CREATE_FILE action hi nahi tha, isliye
+    // "folder banakar text file create kar" mein sirf folder banta tha.
+    private val CREATE_FILE_PARENT = Regex(
+        """^(?:(.+?)\s+(?:mein|me|main)\s+)?(?:ek\s+)?(.+?)\s+(?:naam\s+(?:ki|ka)\s+)?""" +
+            """(?:text\s+)?file\s+(?:banao|banado|create\s*kar(?:o|iye)?|create)\s*$"""
     )
 
     private val COPY = Regex(
@@ -269,6 +341,20 @@ object CommandParser {
         // "call karo mummy ko" puts the verb first instead, so both ends count.
         val lead = lower.split(Regex("\\s+")).first()
 
+        // v3.4: "WhatsApp Business open karo" ko label se mat dhoondho.
+        // App list mein Business ka label exact nahi mil raha tha, isliye
+        // panel sirf personal WhatsApp offer karta tha. Yahan hint hi
+        // kaafi hai: VoiceService/ActionRunner "business" dekh kar seedha
+        // com.whatsapp.w4b package kholenge, label chahe kuch bhi ho.
+        if (lower.contains("whatsapp") && lower.contains("business") &&
+            (verb in OPEN_VERBS || lead in OPEN_VERBS)
+        ) {
+            return Guess(
+                Command(Command.Action.OPEN_APP, target = "WhatsApp Business", hint = "whatsapp business"),
+                0.95f
+            )
+        }
+
         if (verb in OPEN_VERBS || lead in OPEN_VERBS) {
             OPEN.find(lower)?.let { m ->
                 val name = slot(m.groupValues[1].ifEmpty { m.groupValues[2] })
@@ -293,11 +379,37 @@ object CommandParser {
         val waText = if (isBusiness) lower.replace("whatsapp business", "whatsapp") else lower
         val waHint = if (isBusiness) "whatsapp business" else "whatsapp"
         WHATSAPP.find(waText)?.let { m ->
-            val who = slot(m.groupValues[1])
+            val who = cleanNamePrefix(slot(m.groupValues[1]))
+            // "likho ki test message hai" mein body "ki test message
+            // hai" nahi, "test message hai" honi chahiye.
             val body = m.groupValues[2].trim()
+                .let { if (it.startsWith("ki ")) it.removePrefix("ki ") else it }
             if (who.isNotEmpty() && body.isNotEmpty()) {
                 // The slots here are pinned by "ko" and the verb, so a long
                 // message body does not make the parse any less certain.
+                return Guess(
+                    Command(Command.Action.WHATSAPP, target = who, text = body, hint = waHint),
+                    if (nameLooksClean(who)) 0.9f else 0.5f
+                )
+            }
+        }
+
+        // v3.4: "per" wala WhatsApp message (upar WHATSAPP_PER dekhein).
+        // Slots "per" aur "ka message bhejo" se pin hain, isliye lambi
+        // body bhi is parse ko kamzor nahi karti.
+        WHATSAPP_PER.find(waText)?.let { m ->
+            // v3.7: "ismein ammi new number per ..." mein "ismein"
+            // naam ka hissa nahi hai, warna contact kabhi nahi milega.
+            val who = cleanNamePrefix(slot(m.groupValues[1]))
+            val body = m.groupValues[2].trim()
+            // v3.5: "WhatsApp per Wajid ko ..." mein PER pattern galat
+            // who "whatsapp" bana deta tha. Platform kabhi contact nahi
+            // hota — is case ko WHATSAPP pattern par chhod dein, jo
+            // slot() se "per wajid" ko "wajid" bana deta hai.
+            if (who.isNotEmpty() && !who.contains("whatsapp") &&
+                body.isNotEmpty() &&
+                body !in setOf("bhejo", "bhej", "message", "msg")
+            ) {
                 return Guess(
                     Command(Command.Action.WHATSAPP, target = who, text = body, hint = waHint),
                     if (nameLooksClean(who)) 0.9f else 0.5f
@@ -369,6 +481,42 @@ object CommandParser {
             )
         }
 
+        // v3.7: alias folder khud — "download open karo" mein
+        // folder shabd hi nahi hai, isliye FOLDER_OPEN_PARENT kabhi
+        // nahi milta tha.
+        ALIAS_FOLDER_OPEN.find(lower)?.let { m ->
+            return Guess(
+                Command(Command.Action.OPEN_FOLDER, from = "", to = slot(m.groupValues[1])),
+                minOf(0.88f, cap)
+            )
+        }
+
+        // v3.7: text file banana — pehle action hi nahi tha.
+        CREATE_FILE_PARENT.find(lower)?.let { m ->
+            val parent = slot(m.groupValues[1])
+            var name = cleanFileName(slot(m.groupValues[2]))
+            if (name in setOf("normal", "nayi", "naya", "new", "")) name = "New Text File"
+            return Guess(
+                Command(Command.Action.CREATE_FILE, from = parent, to = name),
+                minOf(0.85f, cap)
+            )
+        }
+
+        // v3.4: folder kholna (banana nahi). Pehle is action ka naam hi
+        // nahi tha, isliye "folder open karo" Gemini par ja kar marr jata
+        // tha. ActionRunner Files app kholega aur folder ki list panel
+        // par dikhayega.
+        FOLDER_OPEN_PARENT.find(lower)?.let { m ->
+            val parent = slot(m.groupValues[1])
+            val name = cleanFolderName(slot(m.groupValues[2]))
+            if (name.isNotEmpty()) {
+                return Guess(
+                    Command(Command.Action.OPEN_FOLDER, from = parent, to = name),
+                    minOf(0.88f, cap)
+                )
+            }
+        }
+
         FOLDER_PARENT_NAME.find(lower)?.let { m ->
             val name = cleanFolderName(slot(m.groupValues[2])).ifEmpty { "Naya Folder" }
             return Guess(
@@ -394,7 +542,12 @@ object CommandParser {
         }
 
         if (verb in CALL_VERBS || lead in CALL_VERBS) CALL.find(lower)?.let { m ->
-            val who = slot(m.groupValues[1].ifEmpty { m.groupValues[2] })
+            // v3.6: "call list se shaheen sis ko call karo" mein who
+            // "call list se shaheen sis" ban jata tha (5 shabd), isliye
+            // confidence 0.30 ho kar Gemini par jata tha aur late /
+            // samajh-nahi hota tha. "call list / contacts / nikal kar"
+            // naam ka hissa nahi hote, isliye unko pehle hi hata dein.
+            val who = cleanCallTarget(slot(m.groupValues[1].ifEmpty { m.groupValues[2] }))
             if (who.isNotEmpty()) {
                 // A name is one or two words. Anything longer is leftovers from
                 // a sentence, and dialling on leftovers is how a stray "S" in
@@ -484,7 +637,9 @@ object CommandParser {
     }
 
     /** Hindi case markers, which cling to the end of a slot: "mummy ko". */
-    private val TAIL = setOf("ko", "ka", "ki", "ke", "se", "par", "pe", "pr", "mein", "me")
+    // v3.5: "per" bhi isi list mein hai, warna "per wajid" ka contact
+    // "per wajid" ban jata hai aur kabhi nahi milta.
+    private val TAIL = setOf("ko", "ka", "ki", "ke", "se", "par", "pe", "per", "pr", "mein", "me")
 
     private fun slot(value: String): String {
         val words = value.trim().trim(',', '.', '!', '?', ':', ';')
@@ -507,6 +662,32 @@ object CommandParser {
     /** "Bills naam ka" -> "Bills". Folder naam mein naam/ka shabd nahi. */
     private fun cleanFolderName(value: String): String =
         value.split(" ").filter { it !in setOf("naam", "name", "ka") }.joinToString(" ").trim()
+
+    /** "call list se shaheen sis" -> "shaheen sis". */
+    private fun cleanCallTarget(value: String): String {
+        // v3.7: "rubina second number" mein "second number" naam
+        // nahi, number ka chunav hai — usko hatao, taaki "rubina"
+        // par contact choices dikhein. "Ammi New Number" jaise naam
+        // ko chhedna nahi, isliye sirf second/first number hatao,
+        // generic "number" nahi.
+        val noOrdinal = value
+            .replace("second number", "")
+            .replace("first number", "")
+            .replace("doosra number", "")
+            .replace("pehla number", "")
+        return noOrdinal.split(" ").filter {
+            it !in setOf(
+                "call", "calling", "list", "contacts", "contact", "history",
+                "nikal", "nikalkar", "nikalke", "karke", "kar"
+            )
+        }.joinToString(" ").trim().let { slot(it) }
+    }
+
+    /** "ismein ammi new number" -> "ammi new number". */
+    private fun cleanNamePrefix(value: String): String =
+        value.split(" ").dropWhile {
+            it in setOf("ismein", "isme", "is", "ye", "yeh", "isko", "usmein", "usme", "inmein", "inme")
+        }.joinToString(" ").trim()
 
     /** "resume wali file" -> "resume", "ko documents" -> "documents". */
     private fun cleanFileName(value: String): String =
@@ -536,7 +717,7 @@ object CommandParser {
                 {
                   "action": one of OPEN_APP, CALL, SEND_SMS, WHATSAPP, TYPE_TEXT,
                             CREATE_FOLDER, MOVE_FILE, COPY_FILE, DELETE_FILE,
-                            LIST_FILES, SEARCH_FILE, OPEN_SETTINGS, UNKNOWN,
+                            LIST_FILES, OPEN_FOLDER, SEARCH_FILE, OPEN_SETTINGS, UNKNOWN,
                   "target": app name / contact name / phone number / file name,
                   "text":   message body or text to type,
                   "from":   source file or folder,
@@ -568,6 +749,11 @@ object CommandParser {
               destination folder. For CREATE_FOLDER: "to" is the new folder's
               name and "from" is the folder it goes inside (may be empty).
             - "bhej do" / "message karo" about WhatsApp means WHATSAPP, not SEND_SMS.
+            - "folder open karo" / "folder kholo" means OPEN_FOLDER, not
+              OPEN_APP and not LIST_FILES: "from" is the parent folder alias
+              (download/documents/empty) and "to" is the folder name. "jo
+              folder banaya hai use open karo" means the folder from the
+              previous turn in the history above — use its name and parent.
             - If the user asks to open contacts and look someone up, that is
               OPEN_APP with the contacts app — not CALL.
             - Only use CALL when the user clearly names ONE person to ring.
