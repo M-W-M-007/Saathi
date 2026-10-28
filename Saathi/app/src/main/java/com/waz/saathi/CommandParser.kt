@@ -256,7 +256,10 @@ object CommandParser {
     // Gemini par ja kar timeout ho jata tha.
     private val FOLDER_OPEN_PARENT = Regex(
         """^(?:(.+?)\s+(?:mein|me|main|ke\s+andar)\s+)?(?:ek\s+)?(.+?)\s+(?:naam\s+(?:ka|se)\s+)?folder\s+""" +
-            """(?:hai\s+)?(?:use\s+|usko\s+|isko\s+)?""" +
+            // v3.6: "folder KO open karo / folder KO kholo" — "ko" ke
+            // bina pattern milta hi nahi tha, isliye yeh bhi Gemini
+            // par ja kar marr jata tha.
+            """(?:ko\s+)?(?:hai\s+)?(?:use\s+|usko\s+|isko\s+)?""" +
             """(?:open\s*kar(?:o|iye|ein|na)?|open|kholo|khol\s*do|khol|dikhao|dikhaiye)\s*$"""
     )
 
@@ -500,7 +503,12 @@ object CommandParser {
         }
 
         if (verb in CALL_VERBS || lead in CALL_VERBS) CALL.find(lower)?.let { m ->
-            val who = slot(m.groupValues[1].ifEmpty { m.groupValues[2] })
+            // v3.6: "call list se shaheen sis ko call karo" mein who
+            // "call list se shaheen sis" ban jata tha (5 shabd), isliye
+            // confidence 0.30 ho kar Gemini par jata tha aur late /
+            // samajh-nahi hota tha. "call list / contacts / nikal kar"
+            // naam ka hissa nahi hote, isliye unko pehle hi hata dein.
+            val who = cleanCallTarget(slot(m.groupValues[1].ifEmpty { m.groupValues[2] }))
             if (who.isNotEmpty()) {
                 // A name is one or two words. Anything longer is leftovers from
                 // a sentence, and dialling on leftovers is how a stray "S" in
@@ -615,6 +623,15 @@ object CommandParser {
     /** "Bills naam ka" -> "Bills". Folder naam mein naam/ka shabd nahi. */
     private fun cleanFolderName(value: String): String =
         value.split(" ").filter { it !in setOf("naam", "name", "ka") }.joinToString(" ").trim()
+
+    /** "call list se shaheen sis" -> "shaheen sis". */
+    private fun cleanCallTarget(value: String): String =
+        value.split(" ").filter {
+            it !in setOf(
+                "call", "list", "contacts", "contact", "history",
+                "nikal", "nikalkar", "nikalke", "karke", "kar"
+            )
+        }.joinToString(" ").trim().let { slot(it) }
 
     /** "resume wali file" -> "resume", "ko documents" -> "documents". */
     private fun cleanFileName(value: String): String =
