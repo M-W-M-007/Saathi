@@ -33,10 +33,37 @@ object ContactIndex {
     fun resolve(context: Context, spoken: String): Contact? =
         candidates(context, spoken).firstOrNull()
 
+    // v3.10: Indian number ki jaanch, ek jagah. "Indian number",
+    // "+91", space ya dash bolne se digit nahi badalte — sirf
+    // digit gine jate hain. Sahi hai: 10 digit, ya 91 + 10 digit
+    // (kul 12). Usse kam/zyada, jaise 9 digit, galat hai, aur
+    // usko kabhi WhatsApp/dialer ko nahi dena chahiye — v3.9
+    // video mein 9 digit wala number wa.me par ja kar WhatsApp
+    // se "invalid" kehlaya tha, jabki app ko pehle hi rokna tha.
+    fun digitCount(spoken: String): Int = spoken.filter { it.isDigit() }.length
+
+    fun isDigitTarget(spoken: String): Boolean = digitCount(spoken) >= 7
+
+    fun normalizedIndianNumber(spoken: String): String? {
+        val digits = spoken.filter { it.isDigit() }
+        return when {
+            digits.length == 10 -> "91$digits"
+            digits.length == 12 && digits.startsWith("91") -> digits
+            else -> null
+        }
+    }
+
     /** Best matches first, at most three. Empty when nothing is close enough. */
     fun candidates(context: Context, spoken: String): List<Contact> {
         val digits = spoken.filter { it.isDigit() || it == '+' }
-        if (digits.length >= 7) return listOf(Contact(spoken.trim(), digits))
+        if (digits.length >= 7) {
+            // Galat digit wala number contact nahi hai — usko
+            // return karne se pehle hi WhatsApp invalid khol deta
+            // tha. Empty return se VoiceService/ActionRunner
+            // galat number wala message dikhayenge, WhatsApp nahi.
+            val valid = normalizedIndianNumber(spoken) ?: return emptyList()
+            return listOf(Contact(spoken.trim(), valid))
+        }
 
         if (!hasPermission(context)) return emptyList()
         return search(context, spoken)

@@ -276,6 +276,31 @@ object ActionRunner {
             return Outcome(true, "WhatsApp khul gaya.")
         }
 
+        // v3.10, doosri parat: number bolne par pehle jaanch, phir
+        // WhatsApp. Galat digit wala number kabhi wa.me par nahi
+        // jayega, chahe confirmation ya Gemini se kaise bhi aaya ho.
+        if (ContactIndex.isDigitTarget(who)) {
+            val valid = ContactIndex.normalizedIndianNumber(who)
+                ?: return Outcome(
+                    false,
+                    "Number ${ContactIndex.digitCount(who)} digit ka hai, " +
+                        "Indian number 10 digit ka hota hai. Ek digit kam/zyada " +
+                        "lag raha hai, number phir se boliye — WhatsApp nahi khola."
+                )
+            // Valid number ko seedha wa.me par bhejo, contact lookup
+            // ki zaroorat nahi — number hi pehchaan hai.
+            val uri = Uri.parse("https://wa.me/$valid?text=" + Uri.encode(body))
+            val viewIntent = Intent(Intent.ACTION_VIEW, uri)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            runCatching { viewIntent.setPackage(chosenPackage) }
+            context.startActivity(viewIntent)
+            return Outcome(
+                true,
+                "+$valid ko WhatsApp message bhej raha hoon.",
+                listOf("Agar send button khud na dabe to chat mein send dabayein.")
+            )
+        }
+
         val contact = ContactIndex.resolve(context, who)
             ?: return Outcome(false, "\"$who\" contacts mein nahi mila.")
 

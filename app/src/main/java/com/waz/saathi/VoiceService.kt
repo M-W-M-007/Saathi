@@ -455,6 +455,22 @@ class VoiceService : Service() {
             return
         }
 
+        // v3.10, pehli parat: number bolne par pehle jaanch, phir
+        // confirmation. Galat digit wala number "Haan, karo" tak
+        // pahunche hi nahi, isliye WhatsApp invalid nahi bolega.
+        // Panel mein digit count dikhega, taaki missing digit
+        // user ko pehle hi nazar aa jaye.
+        if (ContactIndex.isDigitTarget(command.target) &&
+            ContactIndex.normalizedIndianNumber(command.target) == null
+        ) {
+            val count = ContactIndex.digitCount(command.target)
+            val msg = "Number $count digit ka hai, Indian number 10 digit ka hota hai. " +
+                "Ek digit kam/zyada lag raha hai, number phir se boliye — WhatsApp nahi khola."
+            updatePanel(msg, spoken, listOf("Sahi number: 10 digit ka Indian number boliye."))
+            Speaker.say(this, msg)
+            return
+        }
+
         updatePanel("Contact dhoondh raha hoon…", spoken)
 
         Thread {
@@ -564,6 +580,13 @@ class VoiceService : Service() {
                 // button turant dikhe. OPEN_FOLDER is list mein nahi
                 // hai — uski list panel par hi dekhni hai, isliye
                 // woh tab tak rehta hai jab tak user band na kare.
+                // v3.10: OPEN_FOLDER_IN_FILES, MOVE_FILE aur COPY_FILE
+                // bhi isi list mein hain — Files khulne ke baad panel
+                // 4 second mein hat jata tha aur bubble bhi nahi dikhta
+                // tha, isliye user ko bahar aakar dobara bolna padta
+                // tha. Ab panel tab tak rahega jab tak user band na
+                // kare, taaki Files ke andar se hi "Phir se boliye"
+                // dabakar dobara bola ja sake.
                 if (command.action in setOf(
                         Command.Action.OPEN_APP,
                         Command.Action.CALL,
@@ -577,8 +600,11 @@ class VoiceService : Service() {
                     }, 1200)
                 } else if (command.action !in setOf(
                         Command.Action.OPEN_FOLDER,
+                        Command.Action.OPEN_FOLDER_IN_FILES,
                         Command.Action.LIST_FILES,
-                        Command.Action.SEARCH_FILE
+                        Command.Action.SEARCH_FILE,
+                        Command.Action.MOVE_FILE,
+                        Command.Action.COPY_FILE
                     )
                 ) {
                     // v3.8: simple kaam ke baad panel 4 second mein

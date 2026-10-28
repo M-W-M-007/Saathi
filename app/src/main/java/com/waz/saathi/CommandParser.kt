@@ -805,6 +805,14 @@ object CommandParser {
             - Only use CALL when the user clearly names ONE person to ring.
             - If you cannot tell, use a single step with action UNKNOWN rather
               than guessing an action that calls someone or deletes something.
+            - v3.10: phone numbers are Indian. "Indian number" / "+91" /
+              "plus ninety one" are not part of the number — strip them.
+              A valid number is exactly 10 digits, or 91 followed by
+              10 digits. Never return a number with fewer than 10 digits
+              after the country code, even if that is what you heard —
+              a missing digit must be UNKNOWN, not a short number, so
+              the app can ask the user to repeat it instead of opening
+              WhatsApp with an invalid number.
 
             Command: $spoken
         """.trimIndent()
