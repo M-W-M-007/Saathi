@@ -39,6 +39,7 @@ data class Command(
         DELETE_FILE,
         LIST_FILES,
         OPEN_FOLDER,
+        OPEN_FOLDER_IN_FILES,
         CREATE_FILE,
         SEARCH_FILE,
         OPEN_SETTINGS,
@@ -72,6 +73,7 @@ data class Command(
         Action.DELETE_FILE -> "$from delete karun?"
         Action.LIST_FILES -> "$from ki files dikhaun"
         Action.OPEN_FOLDER -> "$to folder kholun"
+        Action.OPEN_FOLDER_IN_FILES -> "Files app mein $to kholun"
         Action.CREATE_FILE -> "File banaun: $to"
         Action.SEARCH_FILE -> "$target dhoondhun"
         Action.OPEN_SETTINGS -> "Settings kholun"

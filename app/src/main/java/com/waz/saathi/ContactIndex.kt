@@ -181,7 +181,11 @@ object ContactIndex {
     /** 1.0 exact, 0.85 prefix, otherwise edit-distance similarity, else 0. */
     private fun wordScore(a: String, b: String): Float {
         if (a == b) return 1f
-        if (a.length >= 3 && (b.startsWith(a) || a.startsWith(b))) return 0.85f
+        // v3.8: dono shabd kam se kam 3 akshar ke hon — pehle ek
+        // akshar wala display shabd ("R") kisi bhi usi akshar se
+        // shuru hone wale shabd se match ho jata tha, isliye Rubina
+        // bolne par "R" wale alag contacts aa jate the.
+        if (a.length >= 3 && b.length >= 3 && (b.startsWith(a) || a.startsWith(b))) return 0.85f
         if (a.length < 4 || b.length < 4) return 0f
         val dist = levenshtein(a, b)
         if (dist > 2) return 0f

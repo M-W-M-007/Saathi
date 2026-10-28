@@ -39,8 +39,14 @@ object Settings {
      * has no voice model for makes the recogniser fail outright, so "phone
      * default" is the safe default and the others are opt-in.
      */
-    fun speechLanguage(context: Context): String =
-        prefs(context).getString(KEY_LANG, "").orEmpty()
+    // v3.8: user Hinglish bolta hai, phone ka default English hai,
+    // isliye Hindi shabd galat sunai dete the. Default ab hi-IN hai;
+    // jo user pehle se English set kar chuka hai, uska English hi
+    // rahega, kyunki prefs mein uska chunav maujood hai.
+    fun speechLanguage(context: Context): String {
+        val saved = prefs(context).getString(KEY_LANG, "").orEmpty()
+        return if (saved.isEmpty()) "hi-IN" else saved
+    }
 
     fun setSpeechLanguage(context: Context, tag: String) {
         prefs(context).edit().putString(KEY_LANG, tag).apply()

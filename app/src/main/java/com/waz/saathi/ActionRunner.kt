@@ -19,7 +19,10 @@ object ActionRunner {
         val ok: Boolean,
         val message: String,
         /** Shown as a list when an action produces one, e.g. file listings. */
-        val details: List<String> = emptyList()
+        val details: List<String> = emptyList(),
+        /** Absolute folder path for OPEN_FOLDER, so "Files mein kholo"
+         * can try to open that exact folder, not a generic Files screen. */
+        val folderPath: String = ""
     )
 
     fun run(context: Context, command: Command): Outcome = when (command.action) {
@@ -34,6 +37,7 @@ object ActionRunner {
         Command.Action.DELETE_FILE -> deleteFile(command.from)
         Command.Action.LIST_FILES -> listFiles(command.from)
         Command.Action.OPEN_FOLDER -> openFolder(context, command.from, command.to)
+        Command.Action.OPEN_FOLDER_IN_FILES -> openFolderInFiles(context, command.from)
         Command.Action.CREATE_FILE -> createFile(command.from, command.to)
         Command.Action.SEARCH_FILE -> searchFile(command.target)
         Command.Action.OPEN_SETTINGS -> openSettings(context)
@@ -79,8 +83,59 @@ object ActionRunner {
         return Outcome(
             true,
             "${FileOps.shortPath(folder)} khul gaya — usme ${items.size} cheezein hain.",
-            details
+            details,
+            folderPath = folder.absolutePath
         )
+    }
+
+    // v3.8: "Files mein kholo" ke liye specific folder ka Documents
+    // URI try karo. Android ka system Files app is URI ko usi folder
+    // par khol sakta hai; OnePlus/Google Files isko na maane toh
+    // generic Files par gir jayega, aur message mein woh saaf hoga.
+    // Ye hissa device par hi verify hoga — har Files app is URI
+    // ko nahi maanti, isliye isko guaranteed mat samajhna.
+    private fun openFolderInFiles(context: Context, folderPath: String): Outcome {
+        requireStorage()?.let { return it }
+        if (folderPath.isBlank()) return Outcome(false, "Folder ka path nahi mila.")
+
+        val prefix = "/storage/emulated/0/"
+        if (folderPath.startsWith(prefix)) {
+            val relative = folderPath.removePrefix(prefix)
+            val uri = Uri.parse(
+                "content://com.android.externalstorage.documents/document/primary%3A" +
+                    relative.replace("/", "%2F")
+            )
+            for (pkg in listOf(
+                "com.google.android.documentsui",
+                "com.android.documentsui"
+            )) {
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "vnd.android.document/directory")
+                    setPackage(pkg)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                val ok = runCatching { context.startActivity(intent); true }.getOrDefault(false)
+                if (ok) return Outcome(true, "Files app mein folder khul gaya.")
+            }
+        }
+
+        // Fallback: generic Files app, lekin message mein saaf hai
+        // ki specific folder nahi khula.
+        val managers = listOf(
+            "com.google.android.documentsui",
+            "com.android.documentsui",
+            "com.oneplus.filemanager",
+            "com.samsung.android.myfiles.MyFiles",
+            "com.mi.android.globalFileexplorer"
+        )
+        for (pkg in managers) {
+            val intent = AppIndex.launchIntent(context, pkg)
+            if (intent != null) {
+                val ok = runCatching { context.startActivity(intent); true }.getOrDefault(false)
+                if (ok) return Outcome(true, "Files app khul gayi, lekin specific folder par nahi — panel list hi sahi folder hai.")
+            }
+        }
+        return Outcome(false, "Files app nahi khuli.")
     }
 
     // v3.7: text file banana. Naam mein .txt na ho toh laga dein,

@@ -317,8 +317,34 @@ object CommandParser {
 
     // ---------------------------------------------------------------- rules
 
+    // v3.8: shuru ke filler — "yahan per document open karo"
+    // mein "yahan per" jagah hai, WhatsApp ka "per" nahi. Isko
+    // hataye bina WHATSAPP_PER "yahan" ko contact bana deta tha.
+    private fun stripLeadingFiller(value: String): String {
+        var out = value
+        val fillers = listOf(
+            "yahan per ", "yahan par ", "yaha per ", "yaha par ",
+            "iske andar ", "is chat mein ", "is app mein ",
+            "is mein ", "ismein ", "iske ", "yahan "
+        )
+        var changed = true
+        while (changed) {
+            changed = false
+            for (f in fillers) {
+                if (out.startsWith(f)) {
+                    out = out.removePrefix(f).trim()
+                    changed = true
+                    break
+                }
+            }
+        }
+        return out
+    }
+
     private fun rules(context: Context, spoken: String): Guess {
-        val lower = spoken.lowercase(Locale.ROOT).trim().trim('.', '!', '?', ',')
+        val lower = stripLeadingFiller(
+            spoken.lowercase(Locale.ROOT).trim().trim('.', '!', '?', ',')
+        )
         val words = lower.split(Regex("\\s+")).size
 
         val mixed = FAMILIES.count { (_, keys) ->
@@ -406,8 +432,17 @@ object CommandParser {
             // who "whatsapp" bana deta tha. Platform kabhi contact nahi
             // hota — is case ko WHATSAPP pattern par chhod dein, jo
             // slot() se "per wajid" ko "wajid" bana deta hai.
+            // v3.8 gate: "per" har jagah WhatsApp nahi hota.
+            // "yahan per document open karo" mein na "whatsapp"
+            // hai, na message verb (bhejo/likho/message) — isko
+            // WhatsApp samajhna hi galat tha, jo galat contact
+            // tak le gaya tha. Aise case ko neeche ke open/folder
+            // patterns par chhod dein.
+            val isMessage = waText.contains("whatsapp") ||
+                listOf("bhejo", "bhej", "likho", "message", "msg")
+                    .any { body.contains(it) }
             if (who.isNotEmpty() && !who.contains("whatsapp") &&
-                body.isNotEmpty() &&
+                body.isNotEmpty() && isMessage &&
                 body !in setOf("bhejo", "bhej", "message", "msg")
             ) {
                 return Guess(

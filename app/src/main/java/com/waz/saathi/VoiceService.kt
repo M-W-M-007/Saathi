@@ -538,12 +538,17 @@ class VoiceService : Service() {
                 .getOrElse { ActionRunner.Outcome(false, "Error: ${it.localizedMessage}") }
 
             main.post {
-                // v3.7: folder ke baad panel par "Files mein kholo"
-                // ka button dein — folder ki list panel par hi hai,
-                // Files app ab khud nahi khulti.
+                // v3.8: folder ke baad panel par "Files mein kholo"
+                // ka button dein — ab yeh generic Files nahi kholta,
+                // balki usi folder ka Documents URI try karta hai
+                // (ActionRunner.openFolderInFiles dekhein).
                 if (command.action == Command.Action.OPEN_FOLDER && outcome.ok) {
                     choices = listOf(
-                        "Files mein kholo" to Command(Command.Action.OPEN_APP, target = "Files")
+                        "Files mein kholo" to Command(
+                            Command.Action.OPEN_FOLDER_IN_FILES,
+                            from = outcome.folderPath,
+                            to = outcome.message
+                        )
                     )
                 }
                 updatePanel(outcome.message, spoken, outcome.details)
@@ -566,6 +571,22 @@ class VoiceService : Service() {
                     main.postDelayed({
                         if (panel != null && panel === shownPanel) removePanelQuietly()
                     }, 1200)
+                } else if (command.action !in setOf(
+                        Command.Action.OPEN_FOLDER,
+                        Command.Action.LIST_FILES,
+                        Command.Action.SEARCH_FILE
+                    )
+                ) {
+                    // v3.8: simple kaam ke baad panel 4 second mein
+                    // khud hat jaye, taaki user ko wapas jaane ke
+                    // liye panel band karke dobara chalu na karna pade.
+                    // Folder/list/search ki list padhni hoti hai,
+                    // isliye woh tab tak rehte hain jab tak user band
+                    // na kare ya bahar tap na kare.
+                    val shownPanel = panel
+                    main.postDelayed({
+                        if (panel != null && panel === shownPanel) removePanelQuietly()
+                    }, 4000)
                 }
             }
         }.start()
@@ -622,11 +643,11 @@ class VoiceService : Service() {
 
         val view = LayoutInflater.from(this).inflate(R.layout.overlay_panel, null)
 
-        // v3.7 Siri-style: fixed height khatam. Chhota kaam ho toh
-        // panel sirf utna hi lamba ho jitna text hai — screen cover
-        // nahi karega, peeche ki app dikhti rahegi. Lambi list ke
-        // liye ScrollView ki height 45% par cap ki hai, taaki buttons
-        // kabhi screen se bahar na jayein.
+        // v3.8 Siri-style, sahi wala: window WRAP_CONTENT hai, aur
+        // ScrollView ki height updatePanel() mein tabhi cap hoti hai
+        // jab list lambi ho. v3.7 mein ScrollView 45% par fix thi,
+        // chahe details khaali ho — isliye panel khaali dark box ban
+        // kar bada dikhta tha, peeche ka screen thoda hi dikhta tha.
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -635,12 +656,6 @@ class VoiceService : Service() {
                 WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
             PixelFormat.TRANSLUCENT
         ).apply { gravity = Gravity.BOTTOM }
-
-        view.findViewById<View>(R.id.panelScroll)?.let { scroll ->
-            scroll.layoutParams = scroll.layoutParams.apply {
-                height = (screenH * 0.45f).toInt()
-            }
-        }
 
         view.findViewById<View>(R.id.panelClose).setOnClickListener { removePanel() }
         view.findViewById<View>(R.id.panelAgain).setOnClickListener { beginListening() }
@@ -663,6 +678,12 @@ class VoiceService : Service() {
             pending = null
             plan = emptyList()
             updatePanel("Theek hai, rehne diya.", "")
+            // v3.8: "Nahi" ke baad panel atka na rahe — 2.5 second
+            // mein khud hat jaye, taaki peeche ki app dikhe.
+            val shownPanel = panel
+            main.postDelayed({
+                if (panel != null && panel === shownPanel) removePanelQuietly()
+            }, 2500)
         }
 
         view.setOnTouchListener { _, event ->
@@ -704,6 +725,18 @@ class VoiceService : Service() {
             text = details.joinToString("\n")
         }
 
+        // v3.8: ScrollView ki height details ke hisaab se. Khaali
+        // ya chhoti list par WRAP_CONTENT — panel chhota hi rahega.
+        // Lambi list (8 se zyada) par 45% cap, taaki buttons kabhi
+        // screen se bahar na jayein aur list scroll ho sake.
+        view.findViewById<View>(R.id.panelScroll)?.let { scroll ->
+            scroll.layoutParams = scroll.layoutParams.apply {
+                height = if (details.size > 8) (screenH * 0.45f).toInt()
+                else WindowManager.LayoutParams.WRAP_CONTENT
+            }
+            scroll.requestLayout()
+        }
+
         renderChoices(view, lastHeard)
 
         val asking = pending != null || plan.isNotEmpty()
@@ -728,16 +761,18 @@ class VoiceService : Service() {
         row.visibility = View.VISIBLE
 
         choices.forEach { (label, command) ->
+            // v3.8 Siri-style chips: full-width green button nahi,
+            // chhota chip — text jitna hi chauda, padding kam.
             val button = TextView(this).apply {
                 text = label
                 setTextColor(0xFFFFFFFF.toInt())
                 setBackgroundColor(0xFF2E7D52.toInt())
-                setPadding(28, 26, 28, 26)
-                textSize = 15f
+                setPadding(20, 14, 20, 14)
+                textSize = 13f
                 layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { bottomMargin = 10 }
+                ).apply { bottomMargin = 8 }
                 setOnClickListener { execute(command, heard) }
             }
             row.addView(button)
